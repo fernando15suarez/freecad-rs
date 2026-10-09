@@ -1,0 +1,13 @@
+[package]
+name = "fc-app"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "freecad-rs"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.36.2", default-features = false, features = ["glow", "default_fonts"] }
+glam = "0.32"
+image = { version = "0.25.10", default-features = false, features = ["png"] }

@@ -1,0 +1,13 @@
+[package]
+name = "fc-occt"
+version = "0.1.0"
+edition = "2021"
+license = "LGPL-2.1-or-later"
+
+[dependencies]
+cxx = "1"
+
+[build-dependencies]
+occt-sys = "7.8.1"
+cxx-build = "1"
+cmake = "0.1"
