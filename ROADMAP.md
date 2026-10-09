@@ -18,7 +18,7 @@ Out of scope for now: FEM, CAM, Arch, TechDraw, assemblies, Python.
 - [x] **M2 Solver** — points, lines, circles, arcs, construction geometry; coincident, horizontal, vertical,
       parallel, perpendicular, tangent, equal, point-on-object, symmetric, distance (+X/Y), radius,
       diameter, angle, lock; DOF count; conflicting/redundant constraint reporting like FreeCAD.
-- [ ] **M3 Part Design core** — Body + feature tree; Pad, Pocket, Revolution, Groove from sketches;
+- [x] **M3 Part Design core** — Body + feature tree; Pad, Pocket, Revolution, Groove from sketches;
       named dimensions + expressions (sketch constraints and feature lengths can be named and referenced, e.g. `width / 2 + 3`);
       deleting named values/dimensions shows their users and can freeze them to plain values; index references renumber;
       changing a sketch dimension recomputes the solid (headless, tested).

@@ -50,19 +50,61 @@ pub fn sketch_wires(sketch: &Sketch, pl: &Placement) -> Result<Shape, PartError>
     Ok(b.build_wires()?)
 }
 
-/// Every non-construction edge chained into one (possibly open) wire, for sweep spines.
+/// Non-construction edges chained head-to-tail into one (possibly open) wire, for sweep
+/// spines. Edges are reordered and flipped as needed, like FreeCAD's spine building.
 pub fn sketch_path(sketch: &Sketch, pl: &Placement) -> Result<Shape, PartError> {
-    let mut b = ProfileBuilder::new();
-    let mut any = false;
-    for g in sketch.geometry.iter().filter(|g| !g.construction) {
-        if matches!(g.curve, Curve::Point { .. }) {
-            continue;
-        }
-        add_edge(&mut b, pl, &g.curve)?;
-        any = true;
-    }
-    if !any {
+    let edges: Vec<&Curve> = sketch
+        .geometry
+        .iter()
+        .filter(|g| !g.construction && !matches!(g.curve, Curve::Point { .. }))
+        .map(|g| &g.curve)
+        .collect();
+    if edges.is_empty() {
         return Err(PartError::Profile("path sketch has no edges".into()));
+    }
+    let mut b = ProfileBuilder::new();
+    if edges.len() == 1 {
+        add_edge(&mut b, pl, edges[0])?;
+    } else {
+        let ends = |c: &Curve| (c.start_point(), c.end_point());
+        let tol = 1e-6;
+        let near = |a: Option<fc_sketch::Vec2>, b: Option<fc_sketch::Vec2>| matches!((a, b), (Some(a), Some(b)) if a.dist(b) < tol);
+        // Start from an edge whose start (or end) touches no other edge, if any.
+        let degree = |p: Option<fc_sketch::Vec2>| edges.iter().filter(|e| near(ends(e).0, p) || near(ends(e).1, p)).count();
+        let mut start = 0;
+        let mut flip0 = false;
+        for (i, e) in edges.iter().enumerate() {
+            let (s, t) = ends(e);
+            if degree(s) == 1 {
+                start = i;
+                break;
+            }
+            if degree(t) == 1 {
+                start = i;
+                flip0 = true;
+                break;
+            }
+        }
+        let mut used = vec![false; edges.len()];
+        let mut order: Vec<(usize, bool)> = vec![(start, flip0)];
+        used[start] = true;
+        let tail = |i: usize, flip: bool| if flip { ends(edges[i]).0 } else { ends(edges[i]).1 };
+        let mut cur = tail(start, flip0);
+        while let Some((i, flip)) = (0..edges.len()).filter(|i| !used[*i]).find_map(|i| {
+            let (s, t) = ends(edges[i]);
+            if near(s, cur) { Some((i, false)) } else if near(t, cur) { Some((i, true)) } else { None }
+        }) {
+            used[i] = true;
+            order.push((i, flip));
+            cur = tail(i, flip);
+        }
+        if used.iter().any(|u| !u) {
+            return Err(PartError::Profile("path edges do not form a single chain".into()));
+        }
+        for (i, _) in order {
+            // MakeWire accepts edges in either direction as long as they connect in sequence.
+            add_edge(&mut b, pl, edges[i])?;
+        }
     }
     b.end_wire()?;
     Ok(b.build_wires()?)

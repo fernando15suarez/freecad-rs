@@ -58,6 +58,7 @@
 #include <GCPnts_TangentialDeflection.hxx>
 #include <BRepAdaptor_Curve.hxx>
 #include <Precision.hxx>
+#include <TopoDS_Vertex.hxx>
 #include <Message.hxx>
 #include <Message_Messenger.hxx>
 
@@ -271,15 +272,33 @@ std::unique_ptr<Shape> sweep(const Shape &profile, const Shape &spine, bool fren
     OCC_TRY
     TopExp_Explorer sp(spine.s, TopAbs_WIRE);
     if (!sp.More()) throw std::runtime_error("sweep: spine has no wire");
-    BRepOffsetAPI_MakePipeShell mk(TopoDS::Wire(sp.Current()));
+    TopoDS_Wire spineWire = TopoDS::Wire(sp.Current());
+    // Run the spine from the end nearest the profile (FreeCAD lets the profile sit at either end).
+    {
+        Bnd_Box pb;
+        BRepBndLib::Add(profile.s, pb);
+        gp_Pnt c = pb.IsVoid() ? gp_Pnt() : gp_Pnt((pb.CornerMin().XYZ() + pb.CornerMax().XYZ()) / 2.0);
+        TopoDS_Vertex v1, v2;
+        TopExp::Vertices(spineWire, v1, v2);
+        gp_Pnt a = BRep_Tool::Pnt(v1);
+        gp_Pnt b = BRep_Tool::Pnt(v2);
+        if (c.Distance(b) < c.Distance(a)) spineWire = TopoDS::Wire(spineWire.Reversed());
+    }
+    BRepOffsetAPI_MakePipeShell mk(spineWire);
     mk.SetMode(frenet);
+    // Sharp corners in the path get mitred corners instead of failing (FreeCAD: Transition = Right corner).
+    mk.SetTransitionMode(BRepBuilderAPI_RightCorner);
     int n = 0;
     for (TopExp_Explorer ex(profile.s, TopAbs_WIRE); ex.More(); ex.Next()) { mk.Add(ex.Current()); ++n; }
     if (n == 0) throw std::runtime_error("sweep: profile has no wire");
     mk.Build();
     if (!mk.IsDone()) throw std::runtime_error("sweep failed");
     mk.MakeSolid();
-    return wrap(mk.Shape());
+    TopoDS_Shape out = mk.Shape();
+    GProp_GProps gp;
+    BRepGProp::VolumeProperties(out, gp);
+    if (gp.Mass() < 0) out.Reverse();
+    return wrap(out);
     OCC_CATCH("sweep")
 }
 

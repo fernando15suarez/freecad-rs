@@ -287,3 +287,20 @@ fn deleting_named_values() {
     assert!(doc.expressions.is_empty(), "{:?}", doc.expressions);
     assert!(doc.canonical_name("width").is_none());
 }
+
+#[test]
+fn sweep_along_out_of_order_path() {
+    let mut doc = Document::new();
+    // Profile: circle r=1 on the XY plane at the origin. Path on XZ: up 10, then over 10 (drawn in reverse order).
+    let mut prof = Sketch::default();
+    circle(&mut prof, (0.0, 0.0), 1.0);
+    let p = doc.add_sketch(Support::XY, prof);
+    let mut path = Sketch::default();
+    line(&mut path, (10.0, 10.0), (0.0, 10.0));
+    line(&mut path, (0.0, 0.0), (0.0, 10.0));
+    let sp = doc.add_sketch(Support::XZ, path);
+    let pipe = doc.add(FeatureKind::AdditivePipe(Pipe { profile: p, spine: sp, frenet: true }));
+    doc.recompute();
+    let v = ok(&doc, pipe).volume();
+    assert!(v > PI * 15.0 && v < PI * 21.0, "{v}");
+}
