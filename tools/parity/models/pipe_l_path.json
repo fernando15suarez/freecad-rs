@@ -1,0 +1,94 @@
+{
+ "features": [
+  {
+   "error": null,
+   "name": "Profile",
+   "type": "Sketcher::SketchObject"
+  },
+  {
+   "error": null,
+   "name": "Spine",
+   "type": "Sketcher::SketchObject"
+  },
+  {
+   "error": null,
+   "name": "AdditivePipe",
+   "type": "PartDesign::AdditivePipe",
+   "volume": 628.3185307170781
+  }
+ ],
+ "freecad": "1.1.3",
+ "sketches": {
+  "Profile": {
+   "conflicting": [],
+   "constraints": 2,
+   "dof": 0,
+   "geometry": 1,
+   "malformed": [],
+   "partially_redundant": [],
+   "placement": {
+    "origin": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "xdir": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "ydir": [
+     0.0,
+     1.0,
+     0.0
+    ]
+   },
+   "redundant": [],
+   "solve": 0
+  },
+  "Spine": {
+   "conflicting": [],
+   "constraints": 6,
+   "dof": 0,
+   "geometry": 2,
+   "malformed": [],
+   "partially_redundant": [],
+   "placement": {
+    "origin": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "xdir": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "ydir": [
+     0.0,
+     2.220446049250313e-16,
+     1.0
+    ]
+   },
+   "redundant": [],
+   "solve": 0
+  }
+ },
+ "solid": {
+  "area": 653.4512719464851,
+  "bbox": [
+   -2.0,
+   -2.0,
+   -4.440892098500626e-16,
+   20.0,
+   2.000000000000007,
+   32.0
+  ],
+  "edges": 8,
+  "faces": 4,
+  "solids": 1,
+  "valid": true,
+  "vertices": 6,
+  "volume": 628.3185307170781
+ }
+}

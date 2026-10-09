@@ -1,0 +1,62 @@
+{
+ "features": [
+  {
+   "error": null,
+   "name": "Sketch",
+   "type": "Sketcher::SketchObject"
+  },
+  {
+   "error": null,
+   "name": "Revolution",
+   "type": "PartDesign::Revolution",
+   "volume": 4712.388980384692
+  }
+ ],
+ "freecad": "1.1.3",
+ "sketches": {
+  "Sketch": {
+   "conflicting": [],
+   "constraints": 12,
+   "dof": 0,
+   "geometry": 4,
+   "malformed": [],
+   "partially_redundant": [],
+   "placement": {
+    "origin": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "xdir": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "ydir": [
+     0.0,
+     2.220446049250313e-16,
+     1.0
+    ]
+   },
+   "redundant": [],
+   "solve": 0
+  }
+ },
+ "solid": {
+  "area": 2356.194490192345,
+  "bbox": [
+   -10.0,
+   -10.0,
+   -2.2204460492503135e-15,
+   10.0,
+   10.000000000000005,
+   20.000000000000004
+  ],
+  "edges": 6,
+  "faces": 4,
+  "solids": 1,
+  "valid": true,
+  "vertices": 4,
+  "volume": 4712.38898038469
+ }
+}

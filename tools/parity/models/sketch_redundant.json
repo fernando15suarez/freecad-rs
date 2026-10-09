@@ -1,0 +1,48 @@
+{
+ "features": [
+  {
+   "error": "Sketch with redundant constraints\nRemove the following redundant constraints:12\n, 13\n",
+   "name": "Sketch",
+   "type": "Sketcher::SketchObject"
+  },
+  {
+   "error": null,
+   "name": "Pad",
+   "type": "PartDesign::Pad"
+  }
+ ],
+ "freecad": "1.1.3",
+ "sketches": {
+  "Sketch": {
+   "conflicting": [],
+   "constraints": 13,
+   "dof": 0,
+   "geometry": 4,
+   "malformed": [],
+   "partially_redundant": [],
+   "placement": {
+    "origin": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "xdir": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "ydir": [
+     0.0,
+     1.0,
+     0.0
+    ]
+   },
+   "redundant": [
+    11,
+    12
+   ],
+   "solve": -2
+  }
+ },
+ "solid": null
+}

@@ -1,0 +1,62 @@
+{
+ "features": [
+  {
+   "error": null,
+   "name": "Sketch",
+   "type": "Sketcher::SketchObject"
+  },
+  {
+   "error": null,
+   "name": "Pad",
+   "type": "PartDesign::Pad",
+   "volume": 168.00000000000009
+  }
+ ],
+ "freecad": "1.1.3",
+ "sketches": {
+  "Sketch": {
+   "conflicting": [],
+   "constraints": 12,
+   "dof": 0,
+   "geometry": 4,
+   "malformed": [],
+   "partially_redundant": [],
+   "placement": {
+    "origin": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "xdir": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "ydir": [
+     0.0,
+     0.0,
+     1.0
+    ]
+   },
+   "redundant": [],
+   "solve": 0
+  }
+ },
+ "solid": {
+  "area": 188.00000000000009,
+  "bbox": [
+   -6.00000000000001,
+   1.0,
+   1.999999999999997,
+   -6.661338147750937e-16,
+   8.000000000000007,
+   6.000000000000007
+  ],
+  "edges": 12,
+  "faces": 6,
+  "solids": 1,
+  "valid": true,
+  "vertices": 8,
+  "volume": 168.0000000000002
+ }
+}

@@ -2,6 +2,7 @@
 //! into a single solid, recomputed in tree order (FreeCAD's PartDesign::Body semantics).
 
 pub mod expr;
+pub mod fcstd;
 pub mod params;
 pub mod placement;
 pub mod profile;

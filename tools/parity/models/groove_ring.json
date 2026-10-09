@@ -1,0 +1,100 @@
+{
+ "features": [
+  {
+   "error": null,
+   "name": "Sketch",
+   "type": "Sketcher::SketchObject"
+  },
+  {
+   "error": null,
+   "name": "Pad",
+   "type": "PartDesign::Pad",
+   "volume": 6283.185307179586
+  },
+  {
+   "error": null,
+   "name": "Sketch001",
+   "type": "Sketcher::SketchObject"
+  },
+  {
+   "error": null,
+   "name": "Groove",
+   "type": "PartDesign::Groove",
+   "volume": 5830.795965062655
+  }
+ ],
+ "freecad": "1.1.3",
+ "sketches": {
+  "Sketch": {
+   "conflicting": [],
+   "constraints": 2,
+   "dof": 0,
+   "geometry": 1,
+   "malformed": [],
+   "partially_redundant": [],
+   "placement": {
+    "origin": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "xdir": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "ydir": [
+     0.0,
+     1.0,
+     0.0
+    ]
+   },
+   "redundant": [],
+   "solve": 0
+  },
+  "Sketch001": {
+   "conflicting": [],
+   "constraints": 12,
+   "dof": 0,
+   "geometry": 4,
+   "malformed": [],
+   "partially_redundant": [],
+   "placement": {
+    "origin": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "xdir": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "ydir": [
+     0.0,
+     2.220446049250313e-16,
+     1.0
+    ]
+   },
+   "redundant": [],
+   "solve": 0
+  }
+ },
+ "solid": {
+  "area": 2060.884780754904,
+  "bbox": [
+   -10.0,
+   -10.0,
+   0.0,
+   10.0,
+   10.0,
+   20.0
+  ],
+  "edges": 9,
+  "faces": 7,
+  "solids": 1,
+  "valid": true,
+  "vertices": 6,
+  "volume": 5830.795965062655
+ }
+}

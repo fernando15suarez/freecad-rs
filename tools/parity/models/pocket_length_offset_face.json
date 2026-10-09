@@ -1,0 +1,100 @@
+{
+ "features": [
+  {
+   "error": null,
+   "name": "Sketch",
+   "type": "Sketcher::SketchObject"
+  },
+  {
+   "error": null,
+   "name": "Pad",
+   "type": "PartDesign::Pad",
+   "volume": 6000.0
+  },
+  {
+   "error": null,
+   "name": "Sketch001",
+   "type": "Sketcher::SketchObject"
+  },
+  {
+   "error": null,
+   "name": "Pocket",
+   "type": "PartDesign::Pocket",
+   "volume": 5840.0
+  }
+ ],
+ "freecad": "1.1.3",
+ "sketches": {
+  "Sketch": {
+   "conflicting": [],
+   "constraints": 11,
+   "dof": 0,
+   "geometry": 4,
+   "malformed": [],
+   "partially_redundant": [],
+   "placement": {
+    "origin": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "xdir": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "ydir": [
+     0.0,
+     1.0,
+     0.0
+    ]
+   },
+   "redundant": [],
+   "solve": 0
+  },
+  "Sketch001": {
+   "conflicting": [],
+   "constraints": 12,
+   "dof": 0,
+   "geometry": 4,
+   "malformed": [],
+   "partially_redundant": [],
+   "placement": {
+    "origin": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "xdir": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "ydir": [
+     0.0,
+     2.220446049250313e-16,
+     1.0
+    ]
+   },
+   "redundant": [],
+   "solve": 0
+  }
+ },
+ "solid": {
+  "area": 2312.0,
+  "bbox": [
+   0.0,
+   0.0,
+   0.0,
+   30.0,
+   20.0,
+   10.0
+  ],
+  "edges": 24,
+  "faces": 11,
+  "solids": 1,
+  "valid": true,
+  "vertices": 16,
+  "volume": 5840.0
+ }
+}
