@@ -129,8 +129,9 @@ impl Shape {
     pub fn loft(sections: &Shape, solid: bool, ruled: bool) -> Result<Shape> {
         Ok(Shape(sys::loft(sections.r(), solid, ruled)?))
     }
-    pub fn sweep(profile: &Shape, spine: &Shape, frenet: bool) -> Result<Shape> {
-        Ok(Shape(sys::sweep(profile.r(), spine.r(), frenet)?))
+    /// `transition`: 0 = transformed, 1 = right corner, 2 = round corner (FreeCAD's Transition).
+    pub fn sweep(profile: &Shape, spine: &Shape, frenet: bool, transition: i32) -> Result<Shape> {
+        Ok(Shape(sys::sweep(profile.r(), spine.r(), frenet, transition)?))
     }
 
     pub fn mesh(&self, linear_deflection: f64, angular_deflection: f64) -> Result<MeshData> {

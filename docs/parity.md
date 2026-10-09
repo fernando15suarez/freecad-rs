@@ -195,3 +195,13 @@ diagnose lists back, and the frame rotation/offset applied), `program_version`, 
 * **Body:** first `PartDesign::Body` (others noted), Group order, Tip, Suppressed;
   BaseFeature noted. Unsupported feature types (fillets, patterns, datums, …) are skipped
   with a note, and features consuming them are skipped too.
+
+## Resolution (lead)
+* F1 fixed: the countersink rim is lifted along its cone (`hole_tool`).
+* F2: `Pipe` has a `transition` field (Transformed default, Right corner, Round corner) passed
+  to `SetTransitionMode`. `pipe_l_path_transformed` stays ignored: OCCT's Transformed mode at a
+  sharp corner yields a degenerate solid in both programs and the numbers differ.
+* F3 fixed: bodies may hold several solids, like FreeCAD 1.1 (AllowCompound).
+* F4 fixed: face attachments use FreeCAD's legacy FlatFace X rule, MapReversed flips X (not
+  Y), and AttachmentOffset applies in the reversed frame. Imports now need no re-expression.
+* F5: redundant sketches are a warning (feature state `warning`), and their features still compute, as FreeCAD's do.

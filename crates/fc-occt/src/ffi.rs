@@ -63,7 +63,7 @@ pub mod ffi {
         /// Loft through wire sections (each `Shape` a wire compound with one wire).
         fn loft(sections: &Shape, solid: bool, ruled: bool) -> Result<UniquePtr<Shape>>;
         /// Sweep a profile (wire compound) along a spine (wire compound).
-        fn sweep(profile: &Shape, spine: &Shape, frenet: bool) -> Result<UniquePtr<Shape>>;
+        fn sweep(profile: &Shape, spine: &Shape, frenet: bool, transition: i32) -> Result<UniquePtr<Shape>>;
         fn make_compound(parts: &Shape, add: &Shape) -> Result<UniquePtr<Shape>>;
         fn empty_shape() -> UniquePtr<Shape>;
         fn clone_shape(s: &Shape) -> UniquePtr<Shape>;

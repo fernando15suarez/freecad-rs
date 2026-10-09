@@ -268,7 +268,7 @@ std::unique_ptr<Shape> loft(const Shape &sections, bool solid, bool ruled) {
     OCC_CATCH("loft")
 }
 
-std::unique_ptr<Shape> sweep(const Shape &profile, const Shape &spine, bool frenet) {
+std::unique_ptr<Shape> sweep(const Shape &profile, const Shape &spine, bool frenet, int transition) {
     OCC_TRY
     TopExp_Explorer sp(spine.s, TopAbs_WIRE);
     if (!sp.More()) throw std::runtime_error("sweep: spine has no wire");
@@ -286,8 +286,10 @@ std::unique_ptr<Shape> sweep(const Shape &profile, const Shape &spine, bool fren
     }
     BRepOffsetAPI_MakePipeShell mk(spineWire);
     mk.SetMode(frenet);
-    // Sharp corners in the path get mitred corners instead of failing (FreeCAD: Transition = Right corner).
-    mk.SetTransitionMode(BRepBuilderAPI_RightCorner);
+    // FreeCAD's Transition property: 0 Transformed (default), 1 Right corner, 2 Round corner.
+    mk.SetTransitionMode(transition == 1 ? BRepBuilderAPI_RightCorner
+                         : transition == 2 ? BRepBuilderAPI_RoundCorner
+                                           : BRepBuilderAPI_Transformed);
     int n = 0;
     for (TopExp_Explorer ex(profile.s, TopAbs_WIRE); ex.More(); ex.Next()) { mk.Add(ex.Current()); ++n; }
     if (n == 0) throw std::runtime_error("sweep: profile has no wire");

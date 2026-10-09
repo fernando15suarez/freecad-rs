@@ -279,13 +279,12 @@ parity! {
     revolution_symmetric_h_axis,
     groove_ring,
     hole_counterbore,
-    #[ignore = "see docs/parity.md (countersink cone)"]
     hole_countersink,
     hole_through_flat,
     loft_rect_to_circle,
     loft_ruled_rects,
     pipe_l_path,
-    #[ignore = "see docs/parity.md (pipe transition)"]
+    #[ignore = "see docs/parity.md (F2: OCCT 'Transformed' transition at a sharp corner gives a degenerate solid; FreeCAD's own result is only the first leg)"]
     pipe_l_path_transformed,
     pipe_arc_path,
     slot_tangent_arcs,
@@ -296,7 +295,6 @@ parity! {
     sketch_redundant,
     sketch_underconstrained,
     multi_feature_part,
-    #[ignore = "see docs/parity.md (multi-solid body)"]
     multi_solid_body,
 }
 

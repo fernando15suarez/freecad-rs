@@ -22,6 +22,8 @@ pub enum PartError {
     Profile(String),
     #[error("sketch is over-constrained (conflicting constraints {0:?})")]
     SketchConflict(Vec<usize>),
+    #[error("sketch has redundant constraints {0:?}")]
+    SketchRedundant(Vec<usize>),
     #[error("sketch failed to solve")]
     SketchFailed,
     #[error("missing input: {0}")]
@@ -137,6 +139,17 @@ pub struct Pipe {
     pub profile: FeatureId,
     pub spine: FeatureId,
     pub frenet: bool,
+    /// How sharp spine corners are swept (FreeCAD's Transition; default Transformed).
+    #[serde(default)]
+    pub transition: Transition,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Transition {
+    #[default]
+    Transformed,
+    RightCorner,
+    RoundCorner,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -249,6 +262,8 @@ pub struct FeatureState {
     pub placement: Option<Placement>,
     pub solve: Option<SolveReport>,
     pub error: Option<PartError>,
+    /// Non-fatal problem (e.g. redundant sketch constraints), shown like FreeCAD's warning.
+    pub warning: Option<String>,
 }
 
 /// A PartDesign Body. Features are kept in tree order; the tip is the last solid feature
@@ -273,7 +288,7 @@ pub struct Document {
 
 impl Clone for FeatureState {
     fn clone(&self) -> Self {
-        FeatureState { shape: self.shape.clone(), tool: self.tool.clone(), placement: self.placement, solve: self.solve.clone(), error: self.error.clone() }
+        FeatureState { shape: self.shape.clone(), tool: self.tool.clone(), placement: self.placement, solve: self.solve.clone(), error: self.error.clone(), warning: self.warning.clone() }
     }
 }
 
@@ -429,15 +444,12 @@ impl Document {
                 // nearest world axis: sketch coordinates then stay stable across recomputes.
                 let n = normalize(face.normal);
                 let origin = scale(n, dot(face.origin, n));
-                let xhint = if n[0].abs() > 0.9 { [0.0, 1.0, 0.0] } else { [1.0, 0.0, 0.0] };
-                Placement::from_normal(origin, n, xhint)
+                Placement::from_normal(origin, n, flat_face_xhint(n))
             }
         };
-        let mut p = base.offset(sf.offset);
-        if sf.reversed {
-            p = p.reversed();
-        }
-        Ok(p)
+        // FreeCAD applies AttachmentOffset in the (possibly reversed) attached frame.
+        let p = if sf.reversed { base.reversed() } else { base };
+        Ok(p.offset(sf.offset))
     }
 
     fn compute_one(&mut self, i: usize, states: &[FeatureState], st: &mut FeatureState) -> Result<(), PartError> {
@@ -448,10 +460,14 @@ impl Document {
                 st.placement = Some(pl);
                 let FeatureKind::Sketch(sfm) = &mut self.features[i].kind else { unreachable!() };
                 let rep = sfm.sketch.solve();
-                let bad = matches!(rep.status, SolveStatus::Conflicting | SolveStatus::Failed);
                 st.solve = Some(rep.clone());
-                if bad {
-                    return Err(if rep.conflicting.is_empty() { PartError::SketchFailed } else { PartError::SketchConflict(rep.conflicting) });
+                match rep.status {
+                    SolveStatus::Conflicting | SolveStatus::Failed => {
+                        return Err(if rep.conflicting.is_empty() { PartError::SketchFailed } else { PartError::SketchConflict(rep.conflicting) });
+                    }
+                    // FreeCAD flags sketches with redundant constraints but features still use them.
+                    SolveStatus::Redundant => st.warning = Some(PartError::SketchRedundant(rep.redundant).to_string()),
+                    SolveStatus::Solved => {}
                 }
                 Ok(())
             }
@@ -497,7 +513,7 @@ impl Document {
                 let prof = profile::sketch_wires(sk, &pl)?;
                 let (spk, spl) = self.sketch_input(states, p.spine)?;
                 let spine = profile::sketch_path(spk, &spl)?;
-                let tool = Shape::sweep(&prof, &spine, p.frenet)?;
+                let tool = Shape::sweep(&prof, &spine, p.frenet, p.transition as i32)?;
                 st.shape = Some(combine(base.as_ref(), &tool, additive)?);
                 st.tool = Some(tool);
                 Ok(())
@@ -520,6 +536,21 @@ impl Document {
         let mut d: Document = serde_json::from_str(s)?;
         d.next_id = d.next_id.max(d.features.iter().map(|f| f.id + 1).max().unwrap_or(0));
         Ok(d)
+    }
+}
+
+/// Sketch X direction for a face attachment, following FreeCAD's legacy FlatFace rule:
+/// normal closest to ±Z -> +X; +Y -> -X; -Y -> +X; +X -> +Y; -X -> -Y.
+pub fn flat_face_xhint(n: V3) -> V3 {
+    let (ax, ay, az) = (n[0].abs(), n[1].abs(), n[2].abs());
+    if az >= ax && az >= ay {
+        [1.0, 0.0, 0.0]
+    } else if ay >= ax {
+        if n[1] > 0.0 { [-1.0, 0.0, 0.0] } else { [1.0, 0.0, 0.0] }
+    } else if n[0] > 0.0 {
+        [0.0, 1.0, 0.0]
+    } else {
+        [0.0, -1.0, 0.0]
     }
 }
 
@@ -554,10 +585,10 @@ fn combine(base: Option<&Shape>, tool: &Shape, additive: bool) -> Result<Shape, 
         (Some(b), false) => b.cut(tool)?,
     };
     let out = out.refine().unwrap_or(out);
+    // FreeCAD 1.1 bodies allow several solids (AllowCompound is on by default).
     match out.solid_count() {
         0 => Err(PartError::Invalid("result has no solid".into())),
-        1 => Ok(out),
-        n => Err(PartError::Invalid(format!("result has {n} solids: a Body must be a single contiguous solid"))),
+        _ => Ok(out),
     }
 }
 
@@ -707,9 +738,14 @@ fn hole_tool(sk: &Sketch, pl: &Placement, h: &Hole, base: &Shape) -> Result<Shap
         } else {
             pts.push((0.0, depth));
         }
-        // Start the profile slightly above the face so the cut is clean.
+        // Start the profile slightly above the face so the cut is clean; a countersink's rim
+        // moves up along its cone so the cone keeps its angle.
         let lift = 1e-3 * h.diameter.max(1.0);
-        let w = |(x, z): (f64, f64)| add(top, add(scale(pl.xdir, x), scale(down, z - if z == 0.0 { lift } else { 0.0 })));
+        let cone_slope = if h.cut == HoleCut::Countersink { (h.countersink_angle / 2.0).to_radians().tan() } else { 0.0 };
+        let w = |(x, z): (f64, f64)| {
+            let (x, z) = if z == 0.0 { (if x > 0.0 { x + lift * cone_slope } else { x }, -lift) } else { (x, z) };
+            add(top, add(scale(pl.xdir, x), scale(down, z)))
+        };
         let mut b = fc_occt::ProfileBuilder::new();
         b.begin_face();
         for k in 0..pts.len() {

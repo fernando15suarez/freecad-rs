@@ -332,7 +332,7 @@ impl App {
             return;
         }
         let kind = if pipe {
-            let p = Pipe { profile: sel[0], spine: sel[1], frenet: true };
+            let p = Pipe { profile: sel[0], spine: sel[1], frenet: true, transition: Transition::Transformed };
             if subtractive { FeatureKind::SubtractivePipe(p) } else { FeatureKind::AdditivePipe(p) }
         } else {
             let l = Loft { profile: sel[0], sections: sel[1..].to_vec(), ruled: false };

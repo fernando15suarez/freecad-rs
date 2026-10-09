@@ -87,8 +87,9 @@ impl Placement {
         Placement { origin: add(self.origin, scale(self.normal(), along_normal)), ..*self }
     }
 
-    /// Flip to look from the other side (normal reversed, X kept).
+    /// Flip to look from the other side, like FreeCAD's MapReversed (a half turn about the
+    /// sketch Y axis: X and the normal reverse, Y is kept).
     pub fn reversed(&self) -> Placement {
-        Placement { origin: self.origin, xdir: self.xdir, ydir: scale(self.ydir, -1.0) }
+        Placement { origin: self.origin, xdir: scale(self.xdir, -1.0), ydir: self.ydir }
     }
 }

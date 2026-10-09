@@ -368,14 +368,12 @@ impl<'a> Importer<'a> {
         let nb = base.normal();
         let n_fc = fc_pl.normal();
         sf.reversed = dot(n_fc, nb) < 0.0;
-        sf.offset = dot(sub(fc_pl.origin, base.origin), nb);
-        let mut ours = base.offset(sf.offset);
-        if sf.reversed {
-            ours = ours.reversed();
-        }
+        // Like FreeCAD, the offset is measured along the (possibly reversed) attached normal.
+        let attached = if sf.reversed { base.reversed() } else { base };
+        sf.offset = dot(sub(fc_pl.origin, attached.origin), attached.normal());
+        let ours = attached.offset(sf.offset);
         // FreeCAD's AttachmentOffset.Base.z vs our offset (for expressions).
-        let s = if sf.reversed { -1.0 } else { 1.0 };
-        self.offset_maps.insert(o.name.clone(), ValueMap { scale: s, add: sf.offset - s * att_off.origin[2] });
+        self.offset_maps.insert(o.name.clone(), ValueMap { scale: 1.0, add: sf.offset - att_off.origin[2] });
         if !att_off.is_identity_rotation() || att_off.origin[0].abs() > 1e-12 || att_off.origin[1].abs() > 1e-12 {
             self.note(&o.name, NoteKind::Info, "AttachmentOffset has an in-plane part; it is folded into the sketch geometry");
         }
@@ -658,14 +656,12 @@ impl<'a> Importer<'a> {
             }
         };
         let transition = o.enumeration("Transition", PIPE_TRANSITIONS).and_then(|(_, s)| s).unwrap_or_default();
-        if transition != "Right corner" {
-            self.note(
-                &o.name,
-                NoteKind::Info,
-                format!("fc-part always sweeps with right-corner transitions; FreeCAD's '{transition}' differs at sharp spine corners"),
-            );
-        }
-        let p = Pipe { profile, spine, frenet };
+        let transition = match transition.as_str() {
+            "Right corner" => crate::Transition::RightCorner,
+            "Round corner" => crate::Transition::RoundCorner,
+            _ => crate::Transition::Transformed,
+        };
+        let p = Pipe { profile, spine, frenet, transition };
         self.add(o, if additive { FeatureKind::AdditivePipe(p) } else { FeatureKind::SubtractivePipe(p) });
     }
 

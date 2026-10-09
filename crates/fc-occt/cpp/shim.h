@@ -44,7 +44,7 @@ std::unique_ptr<Shape> common(const Shape &a, const Shape &b);
 std::unique_ptr<Shape> translated(const Shape &s, std::array<double, 3> d);
 std::unique_ptr<Shape> rotated(const Shape &s, std::array<double, 3> origin, std::array<double, 3> dir, double angle);
 std::unique_ptr<Shape> loft(const Shape &sections, bool solid, bool ruled);
-std::unique_ptr<Shape> sweep(const Shape &profile, const Shape &spine, bool frenet);
+std::unique_ptr<Shape> sweep(const Shape &profile, const Shape &spine, bool frenet, int transition);
 std::unique_ptr<Shape> make_compound(const Shape &parts, const Shape &add);
 std::unique_ptr<Shape> empty_shape();
 std::unique_ptr<Shape> clone_shape(const Shape &s);

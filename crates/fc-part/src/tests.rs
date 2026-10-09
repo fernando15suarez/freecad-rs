@@ -299,7 +299,7 @@ fn sweep_along_out_of_order_path() {
     line(&mut path, (10.0, 10.0), (0.0, 10.0));
     line(&mut path, (0.0, 0.0), (0.0, 10.0));
     let sp = doc.add_sketch(Support::XZ, path);
-    let pipe = doc.add(FeatureKind::AdditivePipe(Pipe { profile: p, spine: sp, frenet: true }));
+    let pipe = doc.add(FeatureKind::AdditivePipe(Pipe { profile: p, spine: sp, frenet: true, transition: Transition::RightCorner }));
     doc.recompute();
     let v = ok(&doc, pipe).volume();
     assert!(v > PI * 15.0 && v < PI * 21.0, "{v}");
