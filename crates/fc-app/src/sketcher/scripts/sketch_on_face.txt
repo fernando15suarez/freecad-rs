@@ -1,0 +1,11 @@
+fit
+tool circle
+click -12 0
+click -8 0
+tool select
+select edge 4
+select edge 1
+constraint tangent
+select edge 4
+dimension diameter 6
+expect dof 2

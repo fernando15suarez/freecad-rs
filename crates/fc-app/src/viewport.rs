@@ -104,6 +104,10 @@ pub struct Viewport {
     pending_fit: bool,
     rect_known: bool,
     gpu: Arc<Mutex<Option<Gpu>>>,
+    /// Sketch edit mode requested for the next frame (see `set_sketch_mode`).
+    sketch_mode_req: bool,
+    /// Sketch edit mode active this frame.
+    sketch_mode: bool,
 }
 
 impl Viewport {
@@ -126,6 +130,8 @@ impl Viewport {
             pending_fit: true,
             rect_known: false,
             gpu: Arc::new(Mutex::new(None)),
+            sketch_mode_req: false,
+            sketch_mode: false,
         }
     }
 
@@ -192,6 +198,14 @@ impl Viewport {
         if first {
             self.pending_fit = true;
         }
+    }
+
+    /// Sketch edit mode for the next `ui()` call (the editor calls this every frame; it lapses
+    /// on its own once the editor is gone). In sketch mode the left button belongs to the
+    /// editor (no orbit, no body picking), middle-drag pans, right-drag orbits,
+    /// two-finger trackpad scroll pans and pinch / cmd+scroll / wheel zoom.
+    pub fn set_sketch_mode(&mut self) {
+        self.sketch_mode_req = true;
     }
 
     pub fn set_overlay(&mut self, o: Overlay) {
@@ -308,6 +322,12 @@ impl Viewport {
 
     pub fn fit_all(&mut self) {
         let Some((mn, mx)) = self.scene_bounds() else { return };
+        self.fit_box(mn.to_array(), mx.to_array());
+    }
+
+    /// Fit the view to a world-space box (keeps the orientation).
+    pub fn fit_box(&mut self, mn: [f64; 3], mx: [f64; 3]) {
+        let (mn, mx) = (DVec3::from(mn), DVec3::from(mx));
         let aspect = self.aspect();
         let (right, up) = (self.cam.right(), self.cam.up());
         let center = (mn + mx) * 0.5;
@@ -512,8 +532,10 @@ impl Viewport {
             let middle = resp.dragged_by(egui::PointerButton::Middle);
             let prim = resp.dragged_by(egui::PointerButton::Primary);
             let sec = resp.dragged_by(egui::PointerButton::Secondary);
-            if middle || (prim && mods.shift) {
+            if middle || (prim && mods.shift && !self.sketch_mode) {
                 self.pan(d.x, d.y);
+            } else if self.sketch_mode && prim {
+                // left button belongs to the sketch editor
             } else if prim || sec {
                 self.orbit(d.x, d.y);
             }
@@ -541,7 +563,7 @@ impl Viewport {
                             // handled through zoom_delta
                         } else if m.command {
                             self.zoom_at((delta.y as f64 * 0.01).exp(), hover);
-                        } else if m.shift || m.alt {
+                        } else if m.shift || m.alt || self.sketch_mode {
                             self.pan(-delta.x, -delta.y);
                         } else {
                             self.orbit(-delta.x, -delta.y);
@@ -562,6 +584,7 @@ impl Viewport {
         let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
         self.rect = rect;
         self.ppp = ui.ctx().pixels_per_point();
+        self.sketch_mode = std::mem::take(&mut self.sketch_mode_req);
         if !self.rect_known {
             self.rect_known = true;
             self.pending_fit = true;
@@ -575,7 +598,10 @@ impl Viewport {
         let dragging = response.dragged();
         let ptr = ui.input(|i| i.pointer.hover_pos());
         let mut hovered = None;
-        if response.hovered() && !dragging {
+        if self.sketch_mode {
+            self.forced_hover = None;
+            self.set_hover(None);
+        } else if response.hovered() && !dragging {
             if let Some(p) = ptr.filter(|p| rect.contains(*p)) {
                 hovered = self.pick_at(p);
                 self.forced_hover = None;
@@ -587,7 +613,7 @@ impl Viewport {
         if self.forced_hover.is_some() {
             hovered = self.hover.clone();
         }
-        let clicked = if response.clicked() {
+        let clicked = if response.clicked() && !self.sketch_mode {
             response.interact_pointer_pos().and_then(|p| self.pick_at(p))
         } else {
             None

@@ -1,0 +1,37 @@
+clear
+tool rect
+click 0 0
+click 40 25
+tool circle
+click 28 12
+click 34 12
+tool select
+fit
+print
+expect geometry 5
+select edge 0
+dimension distancex 50 name=width
+select edge 1
+dimension distancey 30 name=height
+select edge 4
+dimension radius =height/5
+select root
+select point 4 mid
+dimension distancex =width*0.7
+select root
+select point 4 mid
+dimension distancey =height/2
+fit
+print
+expect status fully
+select clear
+select point 0 start
+select point 2 start
+dimension distance 70
+expect driving 14 false
+print
+select clear
+select constraint 10
+toggle driving
+expect dof 1
+select clear

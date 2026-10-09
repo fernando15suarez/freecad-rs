@@ -1,0 +1,11 @@
+clear
+tool rect
+click 0 0
+click 40 25
+tool circle
+click 20 12
+click 26 12
+fit
+tool line
+click 40.2 25.2
+move 49 25.3

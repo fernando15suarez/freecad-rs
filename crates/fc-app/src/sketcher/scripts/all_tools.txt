@@ -1,0 +1,64 @@
+clear
+tool polyline
+click 0 0
+click 30 0.3
+click 30 20
+click 10 25
+rclick 10 25
+tool arc
+click 50 10
+click 60 10
+move 55 18
+move 50 20
+move 43 17
+move 40 10
+click 40 10
+tool arc3
+click -20 0
+click -20 20
+click -28 10
+tool slot
+click 0 -20
+click 30 -20
+click 15 -26
+tool point
+click 15 10
+tool crect
+click 70 -20
+click 80 -14
+tool line
+click -10 -40
+click 12 -34
+click -35 -40
+click -25 -45
+tool select
+print
+select edge 2
+select edge 0
+dimension angle 120
+select edge 10
+select edge 11
+constraint equal
+select edge 4
+dimension diameter 20
+select point 9 start
+select edge 7
+constraint pointonobject
+select point 15 start
+select point 15 end
+select vaxis
+constraint symmetric
+select edge 3
+select edge 1
+constraint tangent
+select edge 16
+constraint block
+select point 14 start
+constraint lock
+drag point 1 end 36 22
+select edge 5
+select edge 6
+dimension radius 4
+fit
+expect status under
+print

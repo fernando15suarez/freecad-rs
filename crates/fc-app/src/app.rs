@@ -376,12 +376,25 @@ impl App {
     // ------------------------------------------------------------------ files
 
     fn open_path(&mut self, p: PathBuf) {
-        match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| Document::from_json(&s).map_err(|e| e.to_string())) {
+        let is_fcstd = p.extension().is_some_and(|e| e.eq_ignore_ascii_case("fcstd"));
+        let loaded = if is_fcstd {
+            fc_part::fcstd::import_with_report(&p).map_err(|e| e.to_string()).map(|(d, rep)| {
+                let skipped: Vec<String> = rep.notes.iter().filter(|n| !matches!(n.kind, fc_part::fcstd::NoteKind::Info)).map(|n| format!("{}: {}", n.object, n.message)).collect();
+                if !skipped.is_empty() {
+                    self.dialog = Some(Dialog::Message(format!("Imported from FreeCAD {} with notes:\n{}", rep.program_version, skipped.join("\n"))));
+                }
+                d
+            })
+        } else {
+            std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| Document::from_json(&s).map_err(|e| e.to_string()))
+        };
+        match loaded {
             Ok(d) => {
                 self.doc = d;
                 self.doc.recompute();
-                self.path = Some(p);
-                self.dirty = false;
+                // FreeCAD files are imported; saving writes a .fcrs next to them.
+                self.path = Some(if is_fcstd { p.with_extension("fcrs") } else { p });
+                self.dirty = is_fcstd;
                 self.undo.clear();
                 self.redo.clear();
                 self.tree_sel.clear();
@@ -440,7 +453,7 @@ impl App {
                     self.dirty = false;
                 }
                 if ui.button("Open").clicked() {
-                    if let Some(p) = rfd::FileDialog::new().add_filter("freecad-rs document", &["fcrs"]).pick_file() {
+                    if let Some(p) = rfd::FileDialog::new().add_filter("freecad-rs or FreeCAD document", &["fcrs", "FCStd", "fcstd"]).pick_file() {
                         self.open_path(p);
                     }
                 }
@@ -597,18 +610,25 @@ impl App {
         if f.suppressed {
             text.push_str("  (suppressed)");
         }
+        let warn = st.and_then(|s| s.warning.clone());
+        if warn.is_some() {
+            text.push_str("  ⚠");
+        }
         let mut rt = egui::RichText::new(text);
         let err = st.and_then(|s| s.error.as_ref());
         if err.is_some() {
             rt = rt.color(egui::Color32::from_rgb(230, 80, 60));
+        } else if warn.is_some() {
+            rt = rt.color(egui::Color32::from_rgb(230, 170, 40));
         }
         if self.doc.tip == Some(id) {
             rt = rt.underline();
         }
         let r = ui.selectable_label(self.tree_sel.contains(&id), rt);
-        let r = match err {
-            Some(e) => r.on_hover_text(e.to_string()),
-            None => r,
+        let r = match (err, warn) {
+            (Some(e), _) => r.on_hover_text(e.to_string()),
+            (None, Some(w)) => r.on_hover_text(w),
+            _ => r,
         };
         if r.double_clicked() {
             *clicked = Some((id, false, true));
@@ -1139,8 +1159,11 @@ impl eframe::App for App {
 
         self.dialogs(ctx);
 
+        let editor_busy = self.editor.as_ref().is_some_and(|e| e.busy());
         if let Some((path, frames)) = &mut self.screenshot {
-            *frames += 1;
+            if !editor_busy {
+                *frames += 1;
+            }
             if *frames == 6 {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             }

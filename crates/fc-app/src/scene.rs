@@ -21,7 +21,7 @@ pub fn deflection(shape: &Shape) -> f64 {
 
 /// Tessellate a shape. Face and edge ids are 0-based (FreeCAD's Face<n> is id + 1).
 pub fn shape_object(name: &str, shape: &Shape, color: [f32; 4]) -> Option<SceneObject> {
-    let m = shape.mesh(deflection(shape), 0.3).ok()?;
+    let m = shape.mesh(deflection(shape), 0.1).ok()?;
     let positions = m.positions.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
     let normals = m.normals.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
     let tri_face = m.tri_face.iter().map(|f| f.saturating_sub(1)).collect();
