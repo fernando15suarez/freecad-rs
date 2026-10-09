@@ -1,0 +1,47 @@
+wait 5
+at screen 904 11
+click
+wait 10
+# XZ plane
+at screen 506 423
+click
+wait 5
+expect editing true
+key G
+key R
+at sketch 5 0.5
+click
+at sketch 10 20
+click
+key Escape
+wait 2
+expect geometry 4
+# fix it: left edge x=5, bottom y=0, width 5, height 20
+at sketch 7.5 0.5
+click
+key K
+key H
+wait 3
+key A cmd
+type 5
+key Enter
+wait 3
+at sketch 10 10
+click
+key K
+key V
+wait 3
+key A cmd
+type 20
+key Enter
+wait 3
+shot OUT/rev_sketch.png
+at screen 28 59
+click
+wait 5
+at screen 1112 11
+click
+wait 6
+expect features 2
+shot OUT/revolution.png
+quit
