@@ -22,8 +22,14 @@ Out of scope for now: FEM, CAM, Arch, TechDraw, assemblies, Python.
       named dimensions + expressions (sketch constraints and feature lengths can be named and referenced, e.g. `width / 2 + 3`);
       deleting named values/dimensions shows their users and can freeze them to plain values; index references renumber;
       changing a sketch dimension recomputes the solid (headless, tested).
-- [ ] **M4 App** — 3D view (orbit/pan/zoom, standard views), feature tree, property editing, STEP/STL export.
-- [ ] **M5 Sketch editor** — draw tools (line, polyline, rectangle, circle, arc, point), snapping,
+- [x] **M4 App** — 3D view (orbit/pan/zoom, standard views), feature tree, property editing, STEP/STL export.
+- [x] **M5 Sketch editor** — draw tools (line, polyline, rectangle, circle, arc, point), snapping,
       constraint tools, dimension editing, DOF/over-constraint coloring like FreeCAD.
 - [ ] **M6 More features** — sketch on face of an existing solid, Loft, Sweep (Pipe), Hole.
-- [ ] **M7 Files + parity** — save/load document, comparison suite against FreeCAD on sample models.
+- [x] **M7 Files + parity** — save/load document, comparison suite against FreeCAD on sample models.
+
+## Testing
+- `cargo test` — solver (48), Part Design (19), FreeCAD parity suite (36 models built with FreeCAD 1.1.3, `tools/parity/`).
+- `tools/e2e/run.sh` — drives the real app with scripted mouse/keyboard input (`FCRS_INPUT`), e.g. new sketch ->
+  rectangle -> dimensions -> Pad -> formula in Length -> sketch on the top face -> circle -> Pocket -> undo/redo.
+- Sketch editor scripts: `crates/fc-app/src/sketcher/scripts/` (`FCRS_SKETCH_SCRIPT`).

@@ -4,6 +4,7 @@ mod demo;
 mod scene;
 mod sketcher;
 mod gpu;
+mod input_script;
 mod viewport;
 
 use std::path::PathBuf;
@@ -18,7 +19,7 @@ fn main() -> eframe::Result {
         })
         .unwrap_or((1280.0, 800.0));
     let options = eframe::NativeOptions {
-        viewport: egui_viewport(w, h, shot.is_none()),
+        viewport: egui_viewport(w, h, shot.is_none() && std::env::var_os("FCRS_INPUT").is_none()),
         multisampling: 4,
         depth_buffer: 24,
         ..Default::default()

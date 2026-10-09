@@ -1,0 +1,91 @@
+wait 5
+at screen 904 11
+click
+wait 10
+at screen 506 402
+click
+wait 5
+expect editing true
+key G
+key R
+at sketch 0 0
+click
+at sketch 40 20
+click
+wait 3
+key Escape
+wait 2
+expect geometry 4
+shot OUT/rect.png
+# select bottom edge and give it a horizontal distance
+at sketch 20 0
+click
+key K
+key H
+wait 3
+shot OUT/popup.png
+type 50
+key Enter
+wait 3
+at sketch 50 10
+click
+key K
+key V
+wait 3
+type 30
+key Enter
+wait 3
+expect dof 0
+shot OUT/constrained.png
+at screen 28 59
+click
+wait 5
+expect editing false
+at screen 966 11
+click
+wait 5
+expect features 2
+expect volume 15000
+shot OUT/pad.png
+# formula in the Length field
+at screen 62 292
+click
+key A cmd
+type =2*7
+key Enter
+wait 4
+expect volume 21000
+# sketch on the top face
+at screen 768 300
+click
+wait 2
+at screen 904 11
+click
+wait 6
+expect editing true
+key G
+key C
+at sketch 25 15
+click
+at sketch 30 15
+click
+key Escape
+wait 2
+expect geometry 1
+shot OUT/face_sketch.png
+at screen 28 59
+click
+wait 5
+at screen 1029 11
+click
+wait 6
+expect features 4
+expect volume 20607.301
+shot OUT/pocket.png
+key Z cmd
+wait 4
+expect features 3
+key Z shift cmd
+wait 4
+expect volume 20607.301
+quit

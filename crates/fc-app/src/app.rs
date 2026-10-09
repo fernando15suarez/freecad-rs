@@ -43,6 +43,8 @@ pub struct App {
     /// Test hook: (path, frames rendered)
     screenshot: Option<(PathBuf, u32)>,
     first_frame: bool,
+    /// Test hook: scripted raw input (`FCRS_INPUT`).
+    input: Option<crate::input_script::Runner>,
 }
 
 fn pick_name(vp: &Viewport, p: &Pick) -> String {
@@ -98,7 +100,14 @@ impl App {
             new_param: (String::new(), String::new()),
             screenshot: screenshot.map(|p| (p, 0)),
             first_frame: true,
+            input: None,
         };
+        if let Ok(p) = std::env::var("FCRS_INPUT") {
+            match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| crate::input_script::parse(&s)) {
+                Ok(steps) => app.input = Some(crate::input_script::Runner::new(steps)),
+                Err(e) => eprintln!("[input] {e}"),
+            }
+        }
         if let Ok(p) = std::env::var("FCRS_OPEN") {
             app.open_path(PathBuf::from(p));
         } else if std::env::var_os("FCRS_DEMO").is_some() {
@@ -1078,7 +1087,124 @@ fn fmt_num(v: f64) -> String {
     if s == "-0" { "0".into() } else { s.to_string() }
 }
 
+impl App {
+    /// Feed one step of the input script into egui's raw input.
+    fn drive_input(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        use crate::input_script::Step;
+        use egui::Event;
+        let Some(mut run) = self.input.take() else { return };
+        raw.focused = true;
+        raw.events.append(&mut run.pending);
+        if run.wait > 0 {
+            run.wait -= 1;
+            self.input = Some(run);
+            return;
+        }
+        let Some(step) = run.steps.pop_front() else {
+            eprintln!("[input] done, {} failure(s)", run.failures);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        };
+        let mut moved = |run: &mut crate::input_script::Runner, p: Option<egui::Pos2>, what: &str| match p {
+            Some(p) => {
+                run.pointer = p;
+                raw.events.push(Event::PointerMoved(p));
+            }
+            None => {
+                eprintln!("[input] FAIL: {what} is not on screen");
+                run.failures += 1;
+            }
+        };
+        match step {
+            Step::AtSketch(x, y) => {
+                let p = self.editor.as_ref().map(|e| e.placement().to_world(x, y)).and_then(|w| self.vp.world_to_screen(w));
+                moved(&mut run, p, "sketch point");
+            }
+            Step::AtWorld(w) => {
+                let p = self.vp.world_to_screen(w);
+                moved(&mut run, p, "world point");
+            }
+            Step::AtScreen(x, y) => moved(&mut run, Some(egui::pos2(x, y)), "screen point"),
+            Step::Down(b) => raw.events.push(run.button_event(b, true)),
+            Step::Up(b) => raw.events.push(run.button_event(b, false)),
+            Step::Click(b) => {
+                raw.events.push(run.button_event(b, true));
+                run.pending.push(run.button_event(b, false));
+                run.wait = 1;
+            }
+            Step::DoubleClick => {
+                let b = egui::PointerButton::Primary;
+                raw.events.push(run.button_event(b, true));
+                raw.events.push(run.button_event(b, false));
+                raw.events.push(run.button_event(b, true));
+                run.pending.push(run.button_event(b, false));
+                run.wait = 1;
+            }
+            Step::Key(key, modifiers) => {
+                raw.events.push(Event::ModifiersChanged(modifiers));
+                raw.events.push(Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers });
+                run.pending.push(Event::Key { key, physical_key: Some(key), pressed: false, repeat: false, modifiers });
+                run.pending.push(Event::ModifiersChanged(egui::Modifiers::default()));
+                run.wait = 1;
+            }
+            Step::Type(t) => raw.events.push(Event::Text(t)),
+            Step::Scroll(dx, dy) => raw.events.push(Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(dx, dy),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::default(),
+            }),
+            Step::Wait(n) => run.wait = n,
+            Step::Expect(what, val) => {
+                let got = match what.as_str() {
+                    "dof" => self.editor.as_ref().and_then(|e| self.doc.get(e.feature())).and_then(|f| match &f.kind {
+                        FeatureKind::Sketch(s) => Some(s.sketch.diagnose().dof.to_string()),
+                        _ => None,
+                    }),
+                    "editing" => Some(self.editor.is_some().to_string()),
+                    "features" => Some(self.doc.features.len().to_string()),
+                    "volume" => self.doc.result().map(|s| format!("{:.3}", s.volume())),
+                    "geometry" => self.editor.as_ref().and_then(|e| self.doc.get(e.feature())).and_then(|f| match &f.kind {
+                        FeatureKind::Sketch(s) => Some(s.sketch.geometry.len().to_string()),
+                        _ => None,
+                    }),
+                    "constraints" => self.editor.as_ref().and_then(|e| self.doc.get(e.feature())).and_then(|f| match &f.kind {
+                        FeatureKind::Sketch(s) => Some(s.sketch.constraints.len().to_string()),
+                        _ => None,
+                    }),
+                    _ => None,
+                };
+                let ok = match (&got, what.as_str()) {
+                    (Some(g), "volume") => g.parse::<f64>().ok().zip(val.parse::<f64>().ok()).is_some_and(|(a, b)| (a - b).abs() <= 1e-3 * b.abs().max(1.0)),
+                    (Some(g), _) => *g == val,
+                    _ => false,
+                };
+                if ok {
+                    eprintln!("[input] ok: {what} = {val}");
+                } else {
+                    eprintln!("[input] FAIL: expected {what} = {val}, got {got:?} (status: {})", self.status);
+                    run.failures += 1;
+                }
+            }
+            Step::Shot(p) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(p)));
+                run.wait = 3;
+            }
+            Step::Quit => {
+                eprintln!("[input] done, {} failure(s)", run.failures);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
+        }
+        self.input = Some(run);
+    }
+}
+
 impl eframe::App for App {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.drive_input(ctx, raw_input);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
@@ -1159,6 +1285,27 @@ impl eframe::App for App {
 
         self.dialogs(ctx);
 
+        // Screenshots requested by the input script carry their path as user data.
+        let shots: Vec<(String, std::sync::Arc<egui::ColorImage>)> = ctx.input(|i| {
+            i.raw
+                .events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Screenshot { image, user_data, .. } => user_data.data.as_ref().and_then(|d| d.downcast_ref::<String>()).map(|p| (p.clone(), image.clone())),
+                    _ => None,
+                })
+                .collect()
+        });
+        for (p, img) in shots {
+            let [w, h] = img.size;
+            let bytes: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
+            let _ = image::save_buffer(&p, &bytes, w as u32, h as u32, image::ExtendedColorType::Rgba8);
+            eprintln!("[input] saved {p}");
+        }
+        if self.input.is_some() {
+            ctx.request_repaint();
+            return;
+        }
         let editor_busy = self.editor.as_ref().is_some_and(|e| e.busy());
         if let Some((path, frames)) = &mut self.screenshot {
             if !editor_busy {
@@ -1169,7 +1316,7 @@ impl eframe::App for App {
             }
             let shot = ctx.input(|i| {
                 i.raw.events.iter().find_map(|e| match e {
-                    egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                    egui::Event::Screenshot { image, user_data, .. } if user_data.data.is_none() => Some(image.clone()),
                     _ => None,
                 })
             });
