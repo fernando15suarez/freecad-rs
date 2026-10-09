@@ -20,9 +20,14 @@ Out of scope for now: FEM, CAM, Arch, TechDraw, assemblies, Python.
       diameter, angle, lock; DOF count; conflicting/redundant constraint reporting like FreeCAD.
 - [ ] **M3 Part Design core** — Body + feature tree; Pad, Pocket, Revolution, Groove from sketches;
       named dimensions + expressions (sketch constraints and feature lengths can be named and referenced, e.g. `width / 2 + 3`);
+      deleting named values/dimensions shows their users and can freeze them to plain values; index references renumber;
       changing a sketch dimension recomputes the solid (headless, tested).
 - [ ] **M4 App** — 3D view (orbit/pan/zoom, standard views), feature tree, property editing, STEP/STL export.
 - [ ] **M5 Sketch editor** — draw tools (line, polyline, rectangle, circle, arc, point), snapping,
       constraint tools, dimension editing, DOF/over-constraint coloring like FreeCAD.
 - [ ] **M6 More features** — sketch on face of an existing solid, Loft, Sweep (Pipe), Hole.
 - [ ] **M7 Files + parity** — save/load document, comparison suite against FreeCAD on sample models.
+- [ ] **M8 MBD / 3D annotations** — SolidWorks-MBD-style PMI on the model: linear/radial/angular dimensions
+      between faces and edges, notes with leaders, datums, GD&T frames, annotation views; attached to topology
+      so they follow model changes; measurements are temporary unless kept; STEP AP242 PMI export
+      (needs OCCT's ApplicationFramework/XCAF toolkits).

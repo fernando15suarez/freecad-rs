@@ -1,6 +1,8 @@
 mod app;
 mod camera;
 mod demo;
+mod scene;
+mod sketcher;
 mod gpu;
 mod viewport;
 

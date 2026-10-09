@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
-exclude = ["crates/fc-part"]
 
 [profile.dev.package."*"]
 opt-level = 2

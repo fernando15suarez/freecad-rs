@@ -1,100 +1,65 @@
-//! Procedural demo scene: a 40x30x20 box with a through hole along Z.
-use crate::viewport::{SceneEdge, SceneMesh, SceneObject};
+//! Demo document used by `FCRS_DEMO=1` (screenshots and first launch checks).
 
-pub fn box_with_hole() -> SceneObject {
-    let (hw, hh, h, r) = (20.0f32, 15.0f32, 20.0f32, 7.0f32);
-    let mut m = SceneMesh { positions: vec![], normals: vec![], indices: vec![], tri_face: vec![] };
+use fc_part::*;
+use fc_sketch::{Constraint, ConstraintKind as K, Curve, Geometry, PointPos, PointRef, Sketch, Vec2};
 
-    // angles around the hole, including the rectangle's corner angles
-    let n = 72;
-    let mut angles: Vec<f32> = (0..n).map(|i| i as f32 / n as f32 * std::f32::consts::TAU).collect();
-    for (sx, sy) in [(1.0f32, 1.0f32), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)] {
-        let a = (sy * hh).atan2(sx * hw);
-        angles.push(if a < 0.0 { a + std::f32::consts::TAU } else { a });
-    }
-    angles.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    angles.dedup_by(|a, b| (*a - *b).abs() < 1e-5);
-    let outer = |t: f32| -> [f32; 2] {
-        let (c, s) = (t.cos(), t.sin());
-        let k = (hw / c.abs().max(1e-6)).min(hh / s.abs().max(1e-6));
-        [c * k, s * k]
-    };
-    let inner = |t: f32| -> [f32; 2] { [t.cos() * r, t.sin() * r] };
+fn v(x: f64, y: f64) -> Vec2 {
+    Vec2 { x, y }
+}
+fn pr(geo: usize, pos: PointPos) -> PointRef {
+    PointRef { geo, pos }
+}
 
-    let push = |m: &mut SceneMesh, p: [f32; 3], nrm: [f32; 3]| -> u32 {
-        m.positions.push(p);
-        m.normals.push(nrm);
-        (m.positions.len() - 1) as u32
-    };
-    let tri = |m: &mut SceneMesh, a: u32, b: u32, c: u32, f: u32| {
-        m.indices.extend([a, b, c]);
-        m.tri_face.push(f);
-    };
+/// Fully constrained rectangle; returns (sketch, index of width constraint).
+pub fn rect_sketch(x: f64, y: f64, w: f64, h: f64) -> (Sketch, usize) {
+    let mut s = Sketch::default();
+    let c = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)];
+    let mut l = Vec::new();
+    for i in 0..4 {
+        let (a, b) = (c[i], c[(i + 1) % 4]);
+        l.push(s.add_geometry(Geometry { curve: Curve::Line { a: v(a.0, a.1), b: v(b.0, b.1) }, construction: false }));
+    }
+    for i in 0..4 {
+        s.add_constraint(Constraint::new(K::Coincident(pr(l[i], PointPos::End), pr(l[(i + 1) % 4], PointPos::Start))));
+    }
+    s.add_constraint(Constraint::new(K::Horizontal(l[0])));
+    s.add_constraint(Constraint::new(K::Horizontal(l[2])));
+    s.add_constraint(Constraint::new(K::Vertical(l[1])));
+    s.add_constraint(Constraint::new(K::Vertical(l[3])));
+    let wc = s.add_constraint(Constraint::new(K::DistanceX(pr(l[0], PointPos::Start), pr(l[0], PointPos::End), w)));
+    s.add_constraint(Constraint::new(K::DistanceY(pr(l[1], PointPos::Start), pr(l[1], PointPos::End), h)));
+    s.add_constraint(Constraint::new(K::LockX(pr(l[0], PointPos::Start), x)));
+    s.add_constraint(Constraint::new(K::LockY(pr(l[0], PointPos::Start), y)));
+    (s, wc)
+}
 
-    // top (face 0, +Z) and bottom (face 1, -Z) with hole
-    for (face, z, nz) in [(0u32, h, 1.0f32), (1, 0.0, -1.0)] {
-        let nrm = [0.0, 0.0, nz];
-        let k = angles.len();
-        let o: Vec<u32> = angles.iter().map(|&t| { let p = outer(t); push(&mut m, [p[0], p[1], z], nrm) }).collect();
-        let i: Vec<u32> = angles.iter().map(|&t| { let p = inner(t); push(&mut m, [p[0], p[1], z], nrm) }).collect();
-        for j in 0..k {
-            let j2 = (j + 1) % k;
-            if nz > 0.0 {
-                tri(&mut m, i[j], o[j], o[j2], face);
-                tri(&mut m, i[j], o[j2], i[j2], face);
-            } else {
-                tri(&mut m, i[j], o[j2], o[j], face);
-                tri(&mut m, i[j], i[j2], o[j2], face);
-            }
-        }
-    }
-    // four side faces (2..=5)
-    let c = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
-    let sn = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]];
-    for s in 0..4 {
-        let (a, b) = (c[s], c[(s + 1) % 4]);
-        let v0 = push(&mut m, [a[0], a[1], 0.0], sn[s]);
-        let v1 = push(&mut m, [b[0], b[1], 0.0], sn[s]);
-        let v2 = push(&mut m, [b[0], b[1], h], sn[s]);
-        let v3 = push(&mut m, [a[0], a[1], h], sn[s]);
-        tri(&mut m, v0, v1, v2, 2 + s as u32);
-        tri(&mut m, v0, v2, v3, 2 + s as u32);
-    }
-    // hole cylinder (face 6), normals point into the hole
-    let nc = 96;
-    let mut ring = vec![];
-    for j in 0..=nc {
-        let t = j as f32 / nc as f32 * std::f32::consts::TAU;
-        let nrm = [-t.cos(), -t.sin(), 0.0];
-        let a = push(&mut m, [t.cos() * r, t.sin() * r, 0.0], nrm);
-        let b = push(&mut m, [t.cos() * r, t.sin() * r, h], nrm);
-        ring.push((a, b));
-    }
-    for j in 0..nc {
-        let (a0, b0) = ring[j];
-        let (a1, b1) = ring[j + 1];
-        tri(&mut m, a0, b1, a1, 6);
-        tri(&mut m, a0, b0, b1, 6);
-    }
+/// A plate with a pocket, a counterbored hole and a revolved boss.
+pub fn demo_document() -> Document {
+    let mut doc = Document::new();
+    let (sk, wc) = rect_sketch(-30.0, -20.0, 60.0, 40.0);
+    let s = doc.add_sketch(Support::XY, sk);
+    let pad = doc.add(FeatureKind::Pad(Extrude::new(s, 10.0)));
+    let _ = doc.name_constraint(s, wc, "width");
+    let _ = doc.set_parameter("thickness", "10 mm");
+    let _ = doc.set_expression("Pad.Length", "thickness");
+    doc.recompute();
 
-    // B-rep edges
-    let mut edges = vec![];
-    let mut id = 0;
-    let mut add = |pts: Vec<[f32; 3]>| {
-        edges.push(SceneEdge { id, points: pts });
-        id += 1;
-    };
-    for z in [h, 0.0] {
-        for s in 0..4 {
-            let (a, b) = (c[s], c[(s + 1) % 4]);
-            add(vec![[a[0], a[1], z], [b[0], b[1], z]]);
-        }
-    }
-    for s in 0..4 {
-        add(vec![[c[s][0], c[s][1], 0.0], [c[s][0], c[s][1], h]]);
-    }
-    for z in [h, 0.0] {
-        add((0..=nc).map(|j| { let t = j as f32 / nc as f32 * std::f32::consts::TAU; [t.cos() * r, t.sin() * r, z] }).collect());
-    }
-    SceneObject { name: "Body".into(), mesh: m, edges, visible: true, color: [0.66, 0.70, 0.76, 1.0] }
+    let body = doc.state(pad).and_then(|s| s.shape.clone()).expect("pad");
+    let top = (1..=body.face_count()).find(|&i| body.face_info(i).map(|f| f.normal[2] > 0.99).unwrap_or(false)).unwrap();
+    let fr = face_ref(pad, &body, top).unwrap();
+    let (pk, _) = rect_sketch(-22.0, -12.0, 20.0, 24.0);
+    let s2 = doc.add_sketch(Support::Face(fr.clone()), pk);
+    doc.add(FeatureKind::Pocket(Extrude::new(s2, 5.0)));
+
+    let mut hs = Sketch::default();
+    hs.add_geometry(Geometry { curve: Curve::Circle { c: v(15.0, 0.0), r: 3.0 }, construction: false });
+    let s3 = doc.add_sketch(Support::Face(fr), hs);
+    let mut h = Hole::new(s3, 6.0, 10.0);
+    h.through_all = true;
+    h.cut = HoleCut::Counterbore;
+    h.cut_diameter = 11.0;
+    h.cut_depth = 4.0;
+    doc.add(FeatureKind::Hole(h));
+    doc.recompute();
+    doc
 }
