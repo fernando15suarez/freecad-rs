@@ -27,7 +27,3 @@ Out of scope for now: FEM, CAM, Arch, TechDraw, assemblies, Python.
       constraint tools, dimension editing, DOF/over-constraint coloring like FreeCAD.
 - [ ] **M6 More features** — sketch on face of an existing solid, Loft, Sweep (Pipe), Hole.
 - [ ] **M7 Files + parity** — save/load document, comparison suite against FreeCAD on sample models.
-- [ ] **M8 MBD / 3D annotations** — SolidWorks-MBD-style PMI on the model: linear/radial/angular dimensions
-      between faces and edges, notes with leaders, datums, GD&T frames, annotation views; attached to topology
-      so they follow model changes; measurements are temporary unless kept; STEP AP242 PMI export
-      (needs OCCT's ApplicationFramework/XCAF toolkits).
