@@ -15,7 +15,7 @@ Out of scope for now: FEM, CAM, Arch, TechDraw, assemblies, Python.
 
 ## Milestones
 - [x] **M1 Kernel spike** — OCCT builds statically on macOS arm64; pad a rectangle; STEP + STL export.
-- [ ] **M2 Solver** — points, lines, circles, arcs, construction geometry; coincident, horizontal, vertical,
+- [x] **M2 Solver** — points, lines, circles, arcs, construction geometry; coincident, horizontal, vertical,
       parallel, perpendicular, tangent, equal, point-on-object, symmetric, distance (+X/Y), radius,
       diameter, angle, lock; DOF count; conflicting/redundant constraint reporting like FreeCAD.
 - [ ] **M3 Part Design core** — Body + feature tree; Pad, Pocket, Revolution, Groove from sketches;
