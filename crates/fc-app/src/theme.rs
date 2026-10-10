@@ -116,7 +116,7 @@ pub fn apply(ctx: &egui::Context) {
         w.noninteractive.corner_radius = r;
         w.inactive.bg_fill = BUTTON;
         w.inactive.weak_bg_fill = BUTTON;
-        w.inactive.bg_stroke = Stroke::new(1.0, BORDER);
+        w.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(88, 88, 88));
         w.inactive.fg_stroke = Stroke::new(1.0, TEXT);
         w.inactive.corner_radius = r;
         w.hovered.bg_fill = BUTTON_HOVER;

@@ -1010,11 +1010,13 @@ impl App {
         // spin arrows (step 1; Shift: 0.1)
         let (sr, _) = ui.allocate_exact_size(egui::vec2(spin_w, fx_w), egui::Sense::hover());
         let enabled = bound.is_none() && !locked && ui.is_enabled();
+        ui.painter().rect_stroke(sr.shrink2(egui::vec2(0.0, 1.0)), 3.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 80, 80)), egui::StrokeKind::Inside);
+        ui.painter().line_segment([egui::pos2(sr.left() + 2.0, sr.center().y), egui::pos2(sr.right() - 2.0, sr.center().y)], egui::Stroke::new(1.0, egui::Color32::from_rgb(70, 70, 70)));
         let fine = ui.input(|i| i.modifiers.shift);
         for (up, half) in [(true, egui::Rect::from_min_max(sr.min, egui::pos2(sr.right(), sr.center().y))), (false, egui::Rect::from_min_max(egui::pos2(sr.left(), sr.center().y), sr.max))] {
             let resp = ui.interact(half, id.with(up), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
             let c = half.center();
-            let col = if !enabled { egui::Color32::from_gray(80) } else if resp.hovered() { egui::Color32::WHITE } else { egui::Color32::from_gray(160) };
+            let col = if !enabled { egui::Color32::from_gray(85) } else if resp.hovered() { egui::Color32::WHITE } else { egui::Color32::from_gray(190) };
             if resp.hovered() && enabled {
                 ui.painter().rect_filled(half.shrink(0.5), 2.0, crate::theme::BUTTON_HOVER);
             }
