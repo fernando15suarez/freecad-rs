@@ -62,7 +62,7 @@ fn main() {
     println!("cargo:rerun-if-changed=occt-patch");
     println!("cargo:rustc-link-search=native={}", occt.join("lib").display());
     for lib in OCCT_LIBS {
-        println!("cargo:rustc-link-lib=static={lib}");
+        println!("cargo:rustc-link-lib=static:-bundle={lib}");
     }
     cxx_build::bridge("src/ffi.rs")
         .file("cpp/shim.cpp")
