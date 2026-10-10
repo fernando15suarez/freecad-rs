@@ -1,20 +1,30 @@
-//! Application shell: Part Design document, model tree, property panel, variables,
-//! file I/O and hosting of the sketch editor.
+//! Application shell: Part Design document, file I/O, undo, test hooks and the window
+//! layout (FreeCAD 1.1 look: menu + toolbars, Model dock with the tree and property view on
+//! the left, 3D view with navigation cube, Tasks panel over the right side of the view).
+//!
+//! - `chrome.rs`: menu bar, toolbars, status bar, keyboard shortcuts
+//! - `tree.rs`: Model dock (tree, property grid, variables, measurements)
+//! - `tasks.rs`: Tasks panel (feature parameters, sketch attachment, sketch edit)
+
+mod chrome;
+mod tasks;
+mod tree;
 
 use crate::scene;
 use crate::sketcher::{EditorExit, SketchEditor};
 use crate::viewport::{Pick, PickKind, StandardView, Viewport};
+use crate::widgets;
 use eframe::egui;
-use fc_part::measure::MeasureSpec;
 use fc_part::params::OnUsers;
 use fc_part::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 /// Something waiting on the user in a modal window.
 enum Dialog {
     ConfirmDelete { what: DeleteWhat, users: Vec<String> },
     Message(String),
+    About,
 }
 
 #[derive(Clone)]
@@ -80,6 +90,18 @@ fn file_sig(p: &std::path::Path) -> Option<FileSig> {
     Some((m.modified().ok()?, m.len()))
 }
 
+/// A feature being created or edited in the Tasks panel (FreeCAD's TaskDlgFeatureParameters).
+struct FeatureTask {
+    id: FeatureId,
+    /// Created by this task: Cancel deletes it again.
+    created: bool,
+    /// Document before the task (also the undo snapshot it pushed).
+    before: String,
+}
+
+/// Origin elements shown under Body > Origin: X/Y/Z axes, then the XY/XZ/YZ planes.
+pub const ORIGIN_ITEMS: [(&str, &str); 6] = [("X_Axis", "Std_Axis"), ("Y_Axis", "Std_Axis"), ("Z_Axis", "Std_Axis"), ("XY_Plane", "Std_Plane"), ("XZ_Plane", "Std_Plane"), ("YZ_Plane", "Std_Plane")];
+
 pub struct App {
     doc: Document,
     meas_kind: MeasKind,
@@ -96,7 +118,10 @@ pub struct App {
     hovered: Option<Pick>,
     /// Features selected in the tree (ctrl/cmd-click adds).
     tree_sel: Vec<FeatureId>,
+    /// Origin element selected in the tree (index into `ORIGIN_ITEMS`).
+    origin_sel: Option<usize>,
     editor: Option<SketchEditor>,
+    task: Option<FeatureTask>,
     undo: Vec<String>,
     redo: Vec<String>,
     status: String,
@@ -109,12 +134,28 @@ pub struct App {
     first_frame: bool,
     /// Test hook: scripted raw input (`FCRS_INPUT`).
     input: Option<crate::input_script::Runner>,
-    /// Choosing the plane/face for a new sketch: index of the first plane object in the view.
-    picking_plane: Option<usize>,
+    /// Choosing the plane/face for a new sketch ("Select attachment").
+    picking: bool,
+    /// Plane highlighted in the attachment list (index into `plane_picker::planes()`).
+    plane_choice: Option<usize>,
+    /// Index of the first origin plane object in the view, when planes are shown.
+    planes_at: Option<usize>,
+    show_origin: bool,
+    body_visible: bool,
+    hidden_sketches: HashSet<FeatureId>,
+    /// Property view tab: 0 Data, 1 Variables, 2 Measurements.
+    props_tab: usize,
+    /// FreeCAD's two-key shortcuts ("V, F"): first key and when it was pressed.
+    chord: Option<(egui::Key, f64)>,
+    /// The 3D view's rect last frame (Tasks panel placement).
+    view_rect: egui::Rect,
 }
 
-fn pick_name(vp: &Viewport, p: &Pick) -> String {
+fn pick_name(vp: &Viewport, p: &Pick, planes_at: Option<usize>) -> String {
     let obj = vp.objects().get(p.object).map(|o| o.name.as_str()).unwrap_or("?");
+    if planes_at.is_some_and(|f| p.object >= f) {
+        return obj.to_string();
+    }
     let kind = match p.kind {
         PickKind::Face => "Face",
         PickKind::Edge => "Edge",
@@ -133,22 +174,43 @@ fn parse_pick(s: &str) -> Option<Pick> {
     Some(Pick { object: 0, kind, id: id.parse().ok()?, point: [0.0; 3] })
 }
 
-fn icon(k: &FeatureKind) -> &'static str {
+/// FreeCAD icon of a feature type.
+pub fn feature_icon(k: &FeatureKind) -> &'static str {
     match k {
-        FeatureKind::Sketch(_) => "✏",
-        FeatureKind::Pad(_) => "⬆",
-        FeatureKind::Pocket(_) => "⬇",
-        FeatureKind::Revolution(_) => "⟳",
-        FeatureKind::Groove(_) => "⟲",
-        FeatureKind::AdditiveLoft(_) | FeatureKind::SubtractiveLoft(_) => "◇",
-        FeatureKind::AdditivePipe(_) | FeatureKind::SubtractivePipe(_) => "〰",
-        FeatureKind::Hole(_) => "◎",
+        FeatureKind::Sketch(_) => "Sketcher_Sketch",
+        FeatureKind::Pad(_) => "PartDesign_Pad",
+        FeatureKind::Pocket(_) => "PartDesign_Pocket",
+        FeatureKind::Revolution(_) => "PartDesign_Revolution",
+        FeatureKind::Groove(_) => "PartDesign_Groove",
+        FeatureKind::AdditiveLoft(_) => "PartDesign_AdditiveLoft",
+        FeatureKind::SubtractiveLoft(_) => "PartDesign_SubtractiveLoft",
+        FeatureKind::AdditivePipe(_) => "PartDesign_AdditivePipe",
+        FeatureKind::SubtractivePipe(_) => "PartDesign_SubtractivePipe",
+        FeatureKind::Hole(_) => "PartDesign_Hole",
+    }
+}
+
+/// User-facing feature type name ("Additive loft").
+pub fn feature_title(k: &FeatureKind) -> &'static str {
+    match k {
+        FeatureKind::Sketch(_) => "Sketch",
+        FeatureKind::Pad(_) => "Pad",
+        FeatureKind::Pocket(_) => "Pocket",
+        FeatureKind::Revolution(_) => "Revolution",
+        FeatureKind::Groove(_) => "Groove",
+        FeatureKind::AdditiveLoft(_) => "Additive Loft",
+        FeatureKind::SubtractiveLoft(_) => "Subtractive Loft",
+        FeatureKind::AdditivePipe(_) => "Additive Pipe",
+        FeatureKind::SubtractivePipe(_) => "Subtractive Pipe",
+        FeatureKind::Hole(_) => "Hole",
     }
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, screenshot: Option<PathBuf>) -> Self {
-        let vp = Viewport::new(cc);
+        crate::theme::apply(&cc.egui_ctx);
+        let mut vp = Viewport::new(cc);
+        vp.instant = screenshot.is_some() || std::env::var_os("FCRS_INPUT").is_some();
         let mut app = App {
             doc: Document::new(),
             meas_kind: MeasKind::Volume,
@@ -162,7 +224,9 @@ impl App {
             selection: vec![],
             hovered: None,
             tree_sel: vec![],
+            origin_sel: None,
             editor: None,
+            task: None,
             undo: vec![],
             redo: vec![],
             status: "Ready".into(),
@@ -172,7 +236,15 @@ impl App {
             screenshot: screenshot.map(|p| (p, 0)),
             first_frame: true,
             input: None,
-            picking_plane: None,
+            picking: false,
+            plane_choice: None,
+            planes_at: None,
+            show_origin: false,
+            body_visible: true,
+            hidden_sketches: HashSet::new(),
+            props_tab: 0,
+            chord: None,
+            view_rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 600.0)),
         };
         if let Ok(p) = std::env::var("FCRS_INPUT") {
             match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| crate::input_script::parse(&s)) {
@@ -210,9 +282,16 @@ impl App {
         }
         if let Ok(names) = std::env::var("FCRS_TREESEL") {
             app.tree_sel = names.split(',').filter_map(|n| app.doc.by_name(n).map(|f| f.id)).collect();
+            app.rebuild_scene();
         }
         if let Some(id) = std::env::var("FCRS_EDIT").ok().and_then(|n| app.doc.by_name(&n).map(|f| f.id)) {
-            app.start_edit(id);
+            app.edit_feature(id);
+        }
+        if std::env::var_os("FCRS_NEWSKETCH").is_some() {
+            app.start_plane_pick();
+        }
+        if let Ok(t) = std::env::var("FCRS_TAB") {
+            app.props_tab = t.parse().unwrap_or(0);
         }
         app
     }
@@ -220,24 +299,60 @@ impl App {
     // ------------------------------------------------------------------ model ops
 
     fn rebuild_scene(&mut self) {
-        let mut objs = scene::body_objects(&self.doc);
-        if self.picking_plane.is_some() {
-            self.picking_plane = Some(objs.len());
+        let mut objs = if !self.body_visible {
+            vec![]
+        } else if let Some(ed) = &self.editor {
+            // Like FreeCAD, features that depend on the edited sketch are hidden: show the
+            // solid as it was before the sketch (the face it sits on, if any).
+            let at = self.doc.index_of(ed.feature()).unwrap_or(0);
+            (0..at)
+                .rev()
+                .find(|&i| self.doc.features[i].kind.is_solid_feature() && !self.doc.features[i].suppressed && self.doc.states.get(i).is_some_and(|s| s.error.is_none() && s.shape.is_some()))
+                .and_then(|i| self.doc.states[i].shape.as_ref())
+                .and_then(|s| scene::shape_object("Body", s, scene::BODY_COLOR))
+                .into_iter()
+                .collect()
+        } else {
+            scene::body_objects(&self.doc)
+        };
+        if self.picking || self.show_origin {
+            self.planes_at = Some(objs.len());
             let half = crate::plane_picker::plane_half_size(self.doc.result().map(|s| s.bbox()));
             objs.extend(crate::plane_picker::plane_objects(half));
+        } else {
+            self.planes_at = None;
         }
         self.vp.set_objects(objs);
         if self.editor.is_none() {
             let hl = self.tree_sel.iter().copied().find(|id| matches!(self.doc.get(*id).map(|f| &f.kind), Some(FeatureKind::Sketch(_))));
-            self.vp.set_overlay(scene::sketch_overlay(&self.doc, hl));
+            self.vp.set_overlay(scene::sketch_overlay(&self.doc, hl, &self.hidden_sketches));
         }
+        self.sync_origin_highlight();
     }
 
-    /// Snapshot for undo, apply a change, recompute and redraw.
+    /// Highlight the origin plane selected in the tree (or chosen in the attachment list).
+    fn sync_origin_highlight(&mut self) {
+        let Some(at) = self.planes_at else { return };
+        let plane = if self.picking { self.plane_choice } else { self.origin_sel.filter(|i| *i >= 3).map(|i| i - 3) };
+        let mut sel: Vec<Pick> = self.selection.iter().filter(|p| p.object < at).cloned().collect();
+        if let Some(i) = plane {
+            sel.push(Pick { object: at + i, kind: PickKind::Face, id: 0, point: [0.0; 3] });
+        }
+        self.vp.set_selection(sel);
+    }
+
+    /// Snapshot for undo (unless a task dialog owns the undo step), apply a change, recompute.
     fn change(&mut self, f: impl FnOnce(&mut Document)) {
-        self.snapshot();
+        self.begin_step();
         f(&mut self.doc);
         self.after_change();
+    }
+
+    /// Start an undoable step; inside a task the task's own snapshot covers everything.
+    fn begin_step(&mut self) {
+        if self.task.is_none() {
+            self.snapshot();
+        }
     }
 
     fn snapshot(&mut self) {
@@ -278,8 +393,26 @@ impl App {
         }
     }
 
+    fn can_undo(&self) -> bool {
+        match &self.editor {
+            Some(ed) => ed.can_undo(),
+            None => self.task.is_none() && !self.undo.is_empty(),
+        }
+    }
+
+    fn can_redo(&self) -> bool {
+        match &self.editor {
+            Some(ed) => ed.can_redo(),
+            None => self.task.is_none() && !self.redo.is_empty(),
+        }
+    }
+
     fn undo(&mut self) {
-        if self.editor.is_some() {
+        if let Some(ed) = self.editor.as_mut() {
+            ed.undo(&mut self.doc);
+            return;
+        }
+        if self.task.is_some() {
             return;
         }
         if let Some(prev) = self.undo.pop() {
@@ -290,7 +423,11 @@ impl App {
     }
 
     fn redo(&mut self) {
-        if self.editor.is_some() {
+        if let Some(ed) = self.editor.as_mut() {
+            ed.redo(&mut self.doc);
+            return;
+        }
+        if self.task.is_some() {
             return;
         }
         if let Some(next) = self.redo.pop() {
@@ -298,6 +435,11 @@ impl App {
             self.restore(&next);
             self.status = "Redo".into();
         }
+    }
+
+    /// No dialog, sketch edit or task running: Part Design commands are available.
+    fn idle(&self) -> bool {
+        self.editor.is_none() && self.task.is_none() && !self.picking
     }
 
     /// The feature whose output is the current body solid (for sketch-on-face references).
@@ -332,8 +474,15 @@ impl App {
     }
 
     fn new_sketch(&mut self) {
+        // An origin plane selected in the tree or the view: sketch on it directly (FreeCAD).
+        if let Some(i) = self.origin_sel.filter(|i| *i >= 3) {
+            if let Some(pl) = crate::plane_picker::planes().into_iter().nth(i - 3) {
+                self.create_sketch(pl.support);
+                return;
+            }
+        }
         // A selected planar face of the body becomes the support (sketch on face).
-        let face = self.selection.iter().find(|p| p.kind == PickKind::Face).map(|p| p.id as usize + 1);
+        let face = self.selection.iter().find(|p| p.kind == PickKind::Face && p.object == 0 && self.body_visible).map(|p| p.id as usize + 1);
         if let (Some(face), Some(fid)) = (face, self.tip_solid_feature()) {
             let shape = self.doc.state(fid).and_then(|s| s.shape.clone());
             if let Some(shape) = shape {
@@ -354,27 +503,29 @@ impl App {
         self.start_plane_pick();
     }
 
-    /// FreeCAD-style "Select feature": show the origin planes and let the user click one,
+    /// FreeCAD-style "Select attachment": show the origin planes and let the user click one,
     /// or a flat face of the part.
     fn start_plane_pick(&mut self) {
-        self.picking_plane = Some(0);
+        self.picking = true;
+        self.plane_choice = None;
         self.selection.clear();
         self.vp.set_selection(vec![]);
         self.rebuild_scene();
         if self.doc.result().is_none() {
             self.vp.set_standard_view(StandardView::Isometric);
         }
-        self.status = "Click a plane or a flat face of the part to sketch on (Esc cancels)".into();
+        self.status = "Select a plane or a flat face in the 3D view, or pick a base plane from the list".into();
     }
 
     fn end_plane_pick(&mut self) {
-        self.picking_plane = None;
+        self.picking = false;
+        self.plane_choice = None;
         self.rebuild_scene();
     }
 
     /// Handle a click while picking: true if it chose a support.
     fn pick_support(&mut self, p: &Pick) -> bool {
-        let Some(first) = self.picking_plane else { return false };
+        let first = self.planes_at.unwrap_or(usize::MAX);
         if p.object >= first {
             let i = p.object - first;
             if let Some(pl) = crate::plane_picker::planes().into_iter().nth(i) {
@@ -405,49 +556,11 @@ impl App {
     /// Plane names next to their corners, like FreeCAD's origin labels.
     fn draw_plane_labels(&self, ui: &egui::Ui, ctx: &egui::Context) {
         let half = crate::plane_picker::plane_half_size(self.doc.result().map(|s| s.bbox()));
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("plane_labels")));
-        let clip = ui.clip_rect();
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("plane_labels"))).with_clip_rect(ui.clip_rect());
         for p in crate::plane_picker::planes() {
             if let Some(pos) = self.vp.world_to_screen(p.placement.to_world(half, half)) {
-                if clip.contains(pos) {
-                    painter.text(pos + egui::vec2(4.0, -4.0), egui::Align2::LEFT_BOTTOM, p.name, egui::FontId::proportional(14.0), egui::Color32::from_rgb(40, 40, 90));
-                }
+                painter.text(pos + egui::vec2(4.0, -4.0), egui::Align2::LEFT_BOTTOM, p.name, egui::FontId::proportional(13.0), egui::Color32::from_rgb(170, 175, 235));
             }
-        }
-    }
-
-    fn plane_pick_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("New sketch");
-        ui.label("Pick where to draw: click one of the planes or a flat face of the part in the 3D view, or choose a plane here.");
-        ui.add_space(6.0);
-        let first = self.picking_plane.unwrap_or(0);
-        let hovered_plane = self.hovered.as_ref().filter(|h| h.object >= first).map(|h| h.object - first);
-        let mut chosen = None;
-        let mut any_hovered = false;
-        for (i, p) in crate::plane_picker::planes().into_iter().enumerate() {
-            let r = ui.add_sized([ui.available_width(), 34.0], egui::Button::new(egui::RichText::new(format!("▱  {}", p.name)).size(15.0)).selected(hovered_plane == Some(i)));
-            let r = r.on_hover_text(p.hint);
-            if r.hovered() {
-                any_hovered = true;
-                self.vp.force_hover(Some(Pick { object: first + i, kind: PickKind::Face, id: 0, point: [0.0; 3] }));
-            }
-            if r.clicked() {
-                chosen = Some(p.support);
-            }
-            ui.weak(p.hint);
-            ui.add_space(4.0);
-        }
-        if !any_hovered {
-            self.vp.force_hover(None);
-        }
-        ui.add_space(8.0);
-        if ui.button("Cancel").clicked() {
-            self.end_plane_pick();
-            self.status = "Ready".into();
-        }
-        if let Some(s) = chosen {
-            self.end_plane_pick();
-            self.create_sketch(s);
         }
     }
 
@@ -456,20 +569,41 @@ impl App {
         let id = self.doc.add_sketch(support, fc_sketch::Sketch::default());
         self.after_change();
         self.tree_sel = vec![id];
+        self.origin_sel = None;
         self.selection.clear();
         self.vp.set_selection(vec![]);
         self.start_edit(id);
     }
 
+    /// Double-click / "Edit": sketches open the sketcher, features their task panel.
+    fn edit_feature(&mut self, id: FeatureId) {
+        match self.doc.get(id).map(|f| f.kind.is_solid_feature()) {
+            Some(true) => self.open_task(id, false),
+            Some(false) => self.start_edit(id),
+            None => {}
+        }
+    }
+
     fn start_edit(&mut self, id: FeatureId) {
-        if self.editor.is_some() {
+        if self.editor.is_some() || self.task.is_some() {
             return;
         }
         if let Some(ed) = SketchEditor::new(&self.doc, id) {
             self.snapshot();
             self.vp.align_to_plane(&scene::plane(&ed.placement()));
+            let base_plane = matches!(self.doc.get(id).map(|f| &f.kind), Some(FeatureKind::Sketch(s)) if s.sketch.geometry.is_empty() && !matches!(s.support, Support::Face(_)));
+            if base_plane {
+                // a new sketch on a base plane: origin in the middle of the free part of the view
+                let half = crate::plane_picker::plane_half_size(self.doc.result().map(|s| s.bbox()));
+                let pl = ed.placement();
+                let (a, b) = (pl.to_world(-half, -half), pl.to_world(half, half));
+                self.vp.right_inset = tasks::TASK_W + 16.0;
+                self.vp.fit_box([a[0].min(b[0]), a[1].min(b[1]), a[2].min(b[2])], [a[0].max(b[0]), a[1].max(b[1]), a[2].max(b[2])]);
+            }
             self.status = format!("Editing {}", self.doc.get(id).map(|f| f.label.clone()).unwrap_or_default());
             self.editor = Some(ed);
+            self.tree_sel = vec![id];
+            self.rebuild_scene();
         } else {
             self.status = "Cannot edit this sketch (its support failed to compute)".into();
         }
@@ -505,6 +639,7 @@ impl App {
         self.after_change();
         self.tree_sel = vec![id];
         self.rebuild_scene();
+        self.begin_task(id, true);
     }
 
     fn add_loft_or_pipe(&mut self, subtractive: bool, pipe: bool) {
@@ -525,6 +660,66 @@ impl App {
         let id = self.doc.add(kind);
         self.after_change();
         self.tree_sel = vec![id];
+        self.begin_task(id, true);
+    }
+
+    /// Open the task panel for feature `id`; `created` = the caller just added it (and its
+    /// undo snapshot is on top of the stack).
+    fn begin_task(&mut self, id: FeatureId, created: bool) {
+        if !created {
+            self.snapshot();
+        }
+        let before = self.undo.last().cloned().unwrap_or_default();
+        self.task = Some(FeatureTask { id, created, before });
+        self.tree_sel = vec![id];
+        self.fields.clear();
+        self.status = format!("Editing {}", self.doc.get(id).map(|f| f.label.clone()).unwrap_or_default());
+    }
+
+    fn open_task(&mut self, id: FeatureId, created: bool) {
+        if self.editor.is_some() || self.task.is_some() || self.picking {
+            return;
+        }
+        self.begin_task(id, created);
+    }
+
+    /// OK: keep the result as one undo step.
+    fn task_ok(&mut self) {
+        self.commit_focused_field();
+        let Some(t) = self.task.take() else { return };
+        if !t.created && self.doc.to_json() == t.before {
+            self.undo.pop();
+        }
+        self.fields.clear();
+        self.status = format!("{} updated", self.doc.get(t.id).map(|f| f.label.clone()).unwrap_or_default());
+    }
+
+    /// Cancel: drop a just-created feature, or restore the old values.
+    fn task_cancel(&mut self) {
+        let Some(t) = self.task.take() else { return };
+        self.restore(&t.before);
+        self.undo.pop();
+        if t.created {
+            self.tree_sel.clear();
+        }
+        self.status = "Cancelled".into();
+    }
+
+    /// A field still being typed in when OK is pressed counts (Qt commits on focus loss).
+    fn commit_focused_field(&mut self) {
+        let keys: Vec<(String, String)> = self.fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        for (k, text) in keys {
+            if k.contains(':') {
+                continue;
+            }
+            let cur = self.doc.expressions.get(&k).map(|e| format!("={e}"));
+            let val = self.doc.read_value(&k).map(fmt_num);
+            let t = text.trim();
+            let same = cur.as_deref() == Some(t) || val.as_deref().is_some_and(|v| t == v || t.split_whitespace().next() == Some(v));
+            if !same && !t.is_empty() {
+                self.apply_field(&k, t);
+            }
+        }
     }
 
     fn delete_selected(&mut self) {
@@ -556,7 +751,34 @@ impl App {
         }
     }
 
+    fn toggle_suppressed(&mut self, id: FeatureId) {
+        let sup = self.doc.get(id).map(|f| !f.suppressed).unwrap_or(false);
+        self.change(|d| d.get_mut(id).unwrap().suppressed = sup);
+    }
+
+    fn toggle_tip(&mut self, id: FeatureId) {
+        let is_tip = self.doc.tip == Some(id);
+        self.change(|d| d.tip = if is_tip { None } else { Some(id) });
+    }
+
     // ------------------------------------------------------------------ files
+
+    fn new_document(&mut self) {
+        self.snapshot();
+        self.doc = Document::new();
+        self.path = None;
+        self.tree_sel.clear();
+        self.origin_sel = None;
+        self.after_change();
+        self.dirty = false;
+        self.vp.set_standard_view(StandardView::Isometric);
+    }
+
+    fn open_dialog(&mut self) {
+        if let Some(p) = rfd::FileDialog::new().add_filter("freecad-rs or FreeCAD document", &["fcrs", "FCStd", "fcstd"]).pick_file() {
+            self.open_path(p);
+        }
+    }
 
     fn open_path(&mut self, p: PathBuf) {
         let is_fcstd = p.extension().is_some_and(|e| e.eq_ignore_ascii_case("fcstd"));
@@ -597,6 +819,7 @@ impl App {
         match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| Document::from_json(&s).map_err(|e| e.to_string())) {
             Ok(d) => {
                 self.editor = None;
+                self.task = None;
                 self.snapshot();
                 self.doc = d;
                 self.doc.recompute();
@@ -629,7 +852,7 @@ impl App {
         if self.disk_sig == Some(now) || self.disk_changed {
             return;
         }
-        if self.dirty || self.editor.is_some() {
+        if self.dirty || self.editor.is_some() || self.task.is_some() {
             self.disk_changed = true;
         } else {
             self.reload_from_disk();
@@ -638,13 +861,14 @@ impl App {
 
     fn disk_banner(&mut self, ui: &mut egui::Ui) {
         let name = self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        egui::Panel::top("disk_banner").show(ui, |ui| {
+        egui::Panel::top("disk_banner").frame(egui::Frame::new().fill(egui::Color32::from_rgb(70, 55, 20)).inner_margin(egui::Margin::symmetric(10, 5))).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.colored_label(egui::Color32::from_rgb(230, 170, 50), format!("⚠ {name} changed on disk"));
-                if ui.button("Reload").clicked() {
+                ui.add(crate::icons::image(ui.ctx(), "Warning", 16.0));
+                ui.label(egui::RichText::new(format!("{name} was changed on disk by another program.")).color(egui::Color32::WHITE));
+                if ui.button("Reload").on_hover_text("Discard your unsaved changes and load the file from disk").clicked() {
                     self.reload_from_disk();
                 }
-                if ui.button("Keep mine").clicked() {
+                if ui.button("Keep mine").on_hover_text("Ignore the change on disk; your next save overwrites it").clicked() {
                     self.disk_sig = self.path.as_deref().and_then(file_sig);
                     self.disk_changed = false;
                 }
@@ -687,230 +911,85 @@ impl App {
         }
     }
 
-    // ------------------------------------------------------------------ panels
-
-    fn toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            let editing = self.editor.is_some();
-            ui.add_enabled_ui(!editing, |ui| {
-                if ui.button("New").clicked() {
-                    self.snapshot();
-                    self.doc = Document::new();
-                    self.path = None;
-                    self.tree_sel.clear();
-                    self.after_change();
-                    self.dirty = false;
-                }
-                if ui.button("Open").clicked() {
-                    if let Some(p) = rfd::FileDialog::new().add_filter("freecad-rs or FreeCAD document", &["fcrs", "FCStd", "fcstd"]).pick_file() {
-                        self.open_path(p);
-                    }
-                }
-                if ui.button("Save").clicked() {
-                    self.save(false);
-                }
-                if ui.button("Export STEP").clicked() {
-                    self.export(false);
-                }
-                if ui.button("Export STL").clicked() {
-                    self.export(true);
-                }
-                ui.separator();
-                if ui.add_enabled(!self.undo.is_empty(), egui::Button::new("Undo")).clicked() {
-                    self.undo();
-                }
-                if ui.add_enabled(!self.redo.is_empty(), egui::Button::new("Redo")).clicked() {
-                    self.redo();
-                }
-            });
-            ui.separator();
-            for (name, v) in [
-                ("Iso", StandardView::Isometric),
-                ("Front", StandardView::Front),
-                ("Top", StandardView::Top),
-                ("Right", StandardView::Right),
-                ("Rear", StandardView::Rear),
-                ("Bottom", StandardView::Bottom),
-                ("Left", StandardView::Left),
-            ] {
-                if ui.button(name).clicked() {
-                    self.vp.set_standard_view(v);
-                }
-            }
-            if ui.button("Fit").clicked() {
-                self.vp.fit_all();
-            }
-            let mut persp = self.vp.perspective();
-            if ui.checkbox(&mut persp, "Perspective").changed() {
-                self.vp.set_perspective(persp);
-                self.vp.fit_all();
-            }
-            ui.separator();
-            if editing {
-                let mut ed = self.editor.take();
-                if let Some(e) = ed.as_mut() {
-                    e.toolbar_ui(&mut self.doc, ui);
-                }
-                self.editor = ed;
-                return;
-            }
-            if ui.button("✏ Sketch").on_hover_text("New sketch on a selected face, or on a base plane").clicked() {
-                self.new_sketch();
-            }
-            if ui.button("⬆ Pad").clicked() {
-                self.add_feature(|s| FeatureKind::Pad(Extrude::new(s, 10.0)));
-            }
-            if ui.button("⬇ Pocket").clicked() {
-                self.add_feature(|s| FeatureKind::Pocket(Extrude::new(s, 5.0)));
-            }
-            if ui.button("⟳ Revolution").clicked() {
-                self.add_feature(|s| FeatureKind::Revolution(Revolve::new(s)));
-            }
-            if ui.button("⟲ Groove").clicked() {
-                self.add_feature(|s| FeatureKind::Groove(Revolve::new(s)));
-            }
-            if ui.button("◎ Hole").clicked() {
-                self.add_feature(|s| FeatureKind::Hole(Hole::new(s, 6.0, 10.0)));
-            }
-            if ui.button("◇ Loft").clicked() {
-                self.add_loft_or_pipe(false, false);
-            }
-            if ui.button("◇ Sub. Loft").clicked() {
-                self.add_loft_or_pipe(true, false);
-            }
-            if ui.button("〰 Sweep").clicked() {
-                self.add_loft_or_pipe(false, true);
-            }
-            if ui.button("〰 Sub. Sweep").clicked() {
-                self.add_loft_or_pipe(true, true);
-            }
-        });
+    fn doc_title(&self) -> String {
+        self.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Unnamed".into())
     }
 
-    fn tree(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Model");
-        let title = self.path.as_ref().and_then(|p| p.file_stem()).map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Unnamed".into());
-        ui.label(egui::RichText::new(format!("{title}{}", if self.dirty { " •" } else { "" })).strong());
-        // Sketches consumed by a solid feature are shown under it, like FreeCAD.
-        let consumed: std::collections::HashSet<FeatureId> = self
-            .doc
-            .features
-            .iter()
-            .filter(|f| f.kind.is_solid_feature())
-            .flat_map(|f| f.kind.inputs())
-            .filter(|i| matches!(self.doc.get(*i).map(|f| &f.kind), Some(FeatureKind::Sketch(_))))
-            .collect();
-        let mut clicked: Option<(FeatureId, bool, bool)> = None;
-        let feats: Vec<(FeatureId, String, bool)> = self.doc.features.iter().map(|f| (f.id, f.name.clone(), consumed.contains(&f.id))).collect();
-        egui::ScrollArea::vertical().id_salt("tree").max_height(ui.available_height() * 0.45).show(ui, |ui| {
-            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), "tree_body".into(), true)
-                .show_header(ui, |ui| ui.label(egui::RichText::new("📦 Body").strong()))
-                .body(|ui| {
-                    for (id, _, is_consumed) in &feats {
-                        if *is_consumed {
-                            continue;
-                        }
-                        let inputs: Vec<FeatureId> = self.doc.get(*id).map(|f| f.kind.inputs()).unwrap_or_default().into_iter().filter(|i| consumed.contains(i)).collect();
-                        if inputs.is_empty() || !self.doc.get(*id).map(|f| f.kind.is_solid_feature()).unwrap_or(false) {
-                            self.tree_row(ui, *id, &mut clicked);
-                        } else {
-                            let r = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), egui::Id::new(("feat", *id)), false)
-                                .show_header(ui, |ui| self.tree_row(ui, *id, &mut clicked));
-                            r.body(|ui| {
-                                for i in inputs {
-                                    self.tree_row(ui, i, &mut clicked);
-                                }
-                            });
-                        }
-                    }
-                });
-        });
-        if let Some((id, multi, double)) = clicked {
-            if double {
-                if matches!(self.doc.get(id).map(|f| &f.kind), Some(FeatureKind::Sketch(_))) {
-                    self.tree_sel = vec![id];
-                    self.start_edit(id);
-                    return;
-                }
-            }
-            if multi {
-                if let Some(i) = self.tree_sel.iter().position(|x| *x == id) {
-                    self.tree_sel.remove(i);
-                } else {
-                    self.tree_sel.push(id);
-                }
-            } else {
-                self.tree_sel = vec![id];
-            }
-            self.fields.clear();
-            self.rebuild_scene();
-        }
-    }
+    // ------------------------------------------------------------- value fields
 
-    fn tree_row(&self, ui: &mut egui::Ui, id: FeatureId, clicked: &mut Option<(FeatureId, bool, bool)>) {
-        let Some(f) = self.doc.get(id) else { return };
-        let st = self.doc.state(id);
-        let mut text = format!("{} {}", icon(&f.kind), f.label);
-        if let Some(rep) = st.and_then(|s| s.solve.as_ref()) {
-            if rep.dof > 0 {
-                text.push_str(&format!("  ({} DoF)", rep.dof));
-            }
-        }
-        if f.suppressed {
-            text.push_str("  (suppressed)");
-        }
-        let warn = st.and_then(|s| s.warning.clone());
-        if warn.is_some() {
-            text.push_str("  ⚠");
-        }
-        let mut rt = egui::RichText::new(text);
-        let err = st.and_then(|s| s.error.as_ref());
-        if err.is_some() {
-            rt = rt.color(egui::Color32::from_rgb(230, 80, 60));
-        } else if warn.is_some() {
-            rt = rt.color(egui::Color32::from_rgb(230, 170, 40));
-        }
-        if self.doc.tip == Some(id) {
-            rt = rt.underline();
-        }
-        let r = ui.selectable_label(self.tree_sel.contains(&id), rt);
-        let r = match (err, warn) {
-            (Some(e), _) => r.on_hover_text(e.to_string()),
-            (None, Some(w)) => r.on_hover_text(w),
-            _ => r,
+    /// Numeric property editor that also takes units and formulas (`=width/2`), with
+    /// FreeCAD's fx button. Inside a task, plain numbers apply live as you type.
+    /// Returns true if the document changed.
+    fn value_field(&mut self, ui: &mut egui::Ui, key: &str, unit: &str, width: f32) -> bool {
+        let Some(canon) = self.doc.canonical_name(key) else {
+            widgets::ro_value(ui, "—");
+            return false;
         };
-        if r.double_clicked() {
-            *clicked = Some((id, false, true));
-        } else if r.clicked() {
-            let multi = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
-            *clicked = Some((id, multi, false));
-        }
-    }
-
-    /// A numeric property that can hold a formula. Returns true if the document changed.
-    fn value_field(&mut self, ui: &mut egui::Ui, label: &str, key: &str, unit: &str) -> bool {
-        let Some(canon) = self.doc.canonical_name(key) else { return false };
         let value = self.doc.read_value(&canon).unwrap_or(0.0);
         let bound = self.doc.expressions.get(&canon).cloned();
+        let locked = bound.as_ref().is_some_and(|e| self.doc.driven.contains_key(e.trim()));
         let mut changed = false;
-        ui.label(label);
-        ui.horizontal(|ui| {
-            let id = egui::Id::new(("field", &canon));
-            let buf = self.fields.entry(canon.clone()).or_insert_with(|| match &bound {
-                Some(e) => format!("={e}"),
-                None => format!("{} {unit}", fmt_num(value)),
-            });
-            let resp = ui.add(egui::TextEdit::singleline(buf).id(id).desired_width(110.0));
-            if bound.is_some() {
-                ui.label(egui::RichText::new(format!("ƒx = {} {unit}", fmt_num(value))).weak()).on_hover_text("Driven by a formula. Type a plain number to remove the formula.");
-            }
-            let commit = resp.lost_focus() && !ui.input(|i| i.key_pressed(egui::Key::Escape));
-            if commit {
-                let text = buf.trim().to_string();
-                changed = self.apply_field(&canon, &text);
-                self.fields.remove(&canon);
-            }
+        let id = ui.id().with(("field", &canon));
+        let buf = self.fields.entry(canon.clone()).or_insert_with(|| match &bound {
+            Some(e) => format!("={e}"),
+            None => format!("{} {unit}", fmt_num(value)).trim().to_string(),
         });
+        let fx_w = 22.0;
+        let mut te = egui::TextEdit::singleline(buf).id(id).desired_width((width - fx_w - 4.0).max(40.0)).margin(egui::Margin::symmetric(5, 2));
+        if bound.is_some() {
+            te = te.text_color(egui::Color32::from_rgb(130, 180, 255));
+        }
+        let resp = ui.add_enabled(!locked, te);
+        widgets::reg(format!("field:{canon}"), resp.rect);
+        let resp = match &bound {
+            Some(_) => resp.on_hover_text(format!("= {} {unit}\nDriven by a formula. Type a plain number to remove it.", fmt_num(value))),
+            None => resp.on_hover_text("A number with units (25 mm, 30 deg) or a formula starting with '=' (=width/2)"),
+        };
+        // live preview while typing a plain number inside a task
+        if resp.changed() && self.task.is_some() {
+            let t = buf.trim().to_string();
+            if !t.starts_with('=') && !t.is_empty() {
+                if let Ok(e) = fc_part::expr::parse(&t) {
+                    let mut refs = Vec::new();
+                    e.refs(&mut refs);
+                    refs.retain(|r| r != "pi" && r != "e");
+                    if refs.is_empty() {
+                        if let Ok(v) = e.eval(&mut |n| Err(fc_part::expr::ExprError(format!("unknown {n}")))) {
+                            if (v - value).abs() > 1e-12 || bound.is_some() {
+                                let keep = buf.clone();
+                                let _ = self.doc.set_expression(&canon, "");
+                                self.doc.write_value(&canon, v);
+                                self.after_change();
+                                self.fields.insert(canon.clone(), keep);
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let commit = resp.lost_focus() && !ui.input(|i| i.key_pressed(egui::Key::Escape));
+        if commit {
+            let text = self.fields.get(&canon).cloned().unwrap_or_default().trim().to_string();
+            changed |= self.apply_field(&canon, &text);
+            self.fields.remove(&canon);
+        }
+        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.fields.remove(&canon);
+        }
+        let icon = if bound.is_some() { "bound-expression" } else { "bound-expression-unset" };
+        let (r, fx) = ui.allocate_exact_size(egui::vec2(fx_w, fx_w), egui::Sense::click());
+        widgets::reg(format!("fx:{canon}"), r);
+        if fx.hovered() {
+            ui.painter().rect_filled(r, 3.0, crate::theme::BUTTON_HOVER);
+        }
+        crate::icons::paint(ui.painter(), icon, r.shrink(2.0), egui::Color32::WHITE);
+        let fx = fx.on_hover_text(if bound.is_some() { "Edit the formula" } else { "Enter a formula (expression) for this value" });
+        if fx.clicked() && !locked {
+            let f = bound.clone().unwrap_or_else(|| fmt_num(value));
+            self.fields.insert(canon.clone(), format!("={f}"));
+            ui.memory_mut(|m| m.request_focus(id));
+        }
         changed
     }
 
@@ -941,8 +1020,13 @@ impl App {
         };
         match result {
             Ok(()) => {
-                self.undo.push(before);
-                self.redo.clear();
+                if self.doc.to_json() == before {
+                    return false;
+                }
+                if self.task.is_none() {
+                    self.undo.push(before);
+                    self.redo.clear();
+                }
                 self.after_change();
                 true
             }
@@ -950,393 +1034,6 @@ impl App {
                 self.status = format!("{e}");
                 false
             }
-        }
-    }
-
-    fn properties(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Properties");
-        let Some(&id) = self.tree_sel.last() else {
-            if self.selection.is_empty() {
-                ui.weak("Select a feature in the tree.");
-            }
-            for p in &self.selection {
-                ui.label(pick_name(&self.vp, p));
-            }
-            return;
-        };
-        let Some(f) = self.doc.get(id).cloned() else { return };
-        let name = f.name.clone();
-        egui::Grid::new("props_head").num_columns(2).show(ui, |ui| {
-            ui.label("Type");
-            ui.label(f.kind.type_name());
-            ui.end_row();
-            ui.label("Label");
-            let mut label = f.label.clone();
-            if ui.text_edit_singleline(&mut label).lost_focus() && label != f.label && !label.trim().is_empty() {
-                self.change(|d| d.get_mut(id).unwrap().label = label.trim().to_string());
-            }
-            ui.end_row();
-        });
-        if let Some(e) = self.doc.state(id).and_then(|s| s.error.as_ref()) {
-            ui.colored_label(egui::Color32::from_rgb(230, 80, 60), format!("⚠ {e}"));
-        }
-        let sketch_name = |doc: &Document, s: FeatureId| doc.get(s).map(|f| f.label.clone()).unwrap_or("?".into());
-        match f.kind.clone() {
-            FeatureKind::Sketch(sf) => {
-                ui.label(format!(
-                    "Attached to: {}",
-                    match &sf.support {
-                        Support::XY => "XY plane".to_string(),
-                        Support::XZ => "XZ plane".to_string(),
-                        Support::YZ => "YZ plane".to_string(),
-                        Support::Face(fr) => format!("{}.Face{}", sketch_name(&self.doc, fr.feature), fr.index),
-                    }
-                ));
-                self.value_field(ui, "Attachment offset", &format!("{name}.AttachmentOffset"), "mm");
-                let mut rev = sf.reversed;
-                if ui.checkbox(&mut rev, "Reverse side").changed() {
-                    self.change(|d| {
-                        if let FeatureKind::Sketch(s) = &mut d.get_mut(id).unwrap().kind {
-                            s.reversed = rev;
-                        }
-                    });
-                }
-                if let Some(rep) = self.doc.state(id).and_then(|s| s.solve.clone()) {
-                    ui.label(format!("Degrees of freedom: {}", rep.dof));
-                }
-                if ui.button("Edit sketch").clicked() {
-                    self.start_edit(id);
-                }
-            }
-            FeatureKind::Pad(e) | FeatureKind::Pocket(e) => {
-                let pocket = matches!(f.kind, FeatureKind::Pocket(_));
-                ui.label(format!("Profile: {}", sketch_name(&self.doc, e.profile)));
-                let mut ne = e.clone();
-                egui::ComboBox::from_label("Side").selected_text(format!("{:?}", e.side)).show_ui(ui, |ui| {
-                    ui.selectable_value(&mut ne.side, SideType::OneSide, "One side");
-                    ui.selectable_value(&mut ne.side, SideType::TwoSides, "Two sides");
-                    ui.selectable_value(&mut ne.side, SideType::Symmetric, "Symmetric");
-                });
-                egui::ComboBox::from_label("Type").selected_text(format!("{:?}", e.kind)).show_ui(ui, |ui| {
-                    ui.selectable_value(&mut ne.kind, ExtentType::Length, "Dimension");
-                    ui.selectable_value(&mut ne.kind, ExtentType::ThroughAll, "Through all");
-                    ui.selectable_value(&mut ne.kind, ExtentType::UpToFirst, "Up to first");
-                });
-                if e.kind == ExtentType::Length {
-                    self.value_field(ui, "Length", &format!("{name}.Length"), "mm");
-                }
-                if e.side == SideType::TwoSides {
-                    egui::ComboBox::from_label("Type 2").selected_text(format!("{:?}", e.kind2)).show_ui(ui, |ui| {
-                        ui.selectable_value(&mut ne.kind2, ExtentType::Length, "Dimension");
-                        ui.selectable_value(&mut ne.kind2, ExtentType::ThroughAll, "Through all");
-                        ui.selectable_value(&mut ne.kind2, ExtentType::UpToFirst, "Up to first");
-                    });
-                    if e.kind2 == ExtentType::Length {
-                        self.value_field(ui, "Length 2", &format!("{name}.Length2"), "mm");
-                    }
-                }
-                ui.checkbox(&mut ne.reversed, "Reversed");
-                if ne.side != e.side || ne.kind != e.kind || ne.kind2 != e.kind2 || ne.reversed != e.reversed {
-                    self.change(|d| {
-                        if let Some(FeatureKind::Pad(x) | FeatureKind::Pocket(x)) = d.get_mut(id).map(|f| &mut f.kind) {
-                            x.side = ne.side;
-                            x.kind = ne.kind;
-                            x.kind2 = ne.kind2;
-                            x.reversed = ne.reversed;
-                        }
-                    });
-                }
-                let _ = pocket;
-            }
-            FeatureKind::Revolution(r) | FeatureKind::Groove(r) => {
-                ui.label(format!("Profile: {}", sketch_name(&self.doc, r.profile)));
-                let mut nr = r.clone();
-                let axis_name = |a: &AxisRef| match a {
-                    AxisRef::SketchV => "Vertical sketch axis".to_string(),
-                    AxisRef::SketchH => "Horizontal sketch axis".to_string(),
-                    AxisRef::SketchLine(g) => format!("Sketch line {}", g + 1),
-                    AxisRef::X => "X axis".to_string(),
-                    AxisRef::Y => "Y axis".to_string(),
-                    AxisRef::Z => "Z axis".to_string(),
-                };
-                let lines: Vec<usize> = match self.doc.get(r.profile).map(|f| &f.kind) {
-                    Some(FeatureKind::Sketch(s)) => s.sketch.geometry.iter().enumerate().filter(|(_, g)| g.construction && matches!(g.curve, fc_sketch::Curve::Line { .. })).map(|(i, _)| i).collect(),
-                    _ => vec![],
-                };
-                egui::ComboBox::from_label("Axis").selected_text(axis_name(&r.axis)).show_ui(ui, |ui| {
-                    for a in [AxisRef::SketchV, AxisRef::SketchH, AxisRef::X, AxisRef::Y, AxisRef::Z].into_iter().chain(lines.into_iter().map(AxisRef::SketchLine)) {
-                        let n = axis_name(&a);
-                        ui.selectable_value(&mut nr.axis, a, n);
-                    }
-                });
-                egui::ComboBox::from_label("Side").selected_text(format!("{:?}", r.side)).show_ui(ui, |ui| {
-                    ui.selectable_value(&mut nr.side, SideType::OneSide, "One side");
-                    ui.selectable_value(&mut nr.side, SideType::TwoSides, "Two sides");
-                    ui.selectable_value(&mut nr.side, SideType::Symmetric, "Symmetric");
-                });
-                self.value_field(ui, "Angle", &format!("{name}.Angle"), "°");
-                if r.side == SideType::TwoSides {
-                    self.value_field(ui, "Angle 2", &format!("{name}.Angle2"), "°");
-                }
-                ui.checkbox(&mut nr.reversed, "Reversed");
-                if nr.axis != r.axis || nr.side != r.side || nr.reversed != r.reversed {
-                    self.change(|d| {
-                        if let Some(FeatureKind::Revolution(x) | FeatureKind::Groove(x)) = d.get_mut(id).map(|f| &mut f.kind) {
-                            x.axis = nr.axis.clone();
-                            x.side = nr.side;
-                            x.reversed = nr.reversed;
-                        }
-                    });
-                }
-            }
-            FeatureKind::Hole(h) => {
-                ui.label(format!("Positions from: {}", sketch_name(&self.doc, h.profile)));
-                self.value_field(ui, "Diameter", &format!("{name}.Diameter"), "mm");
-                let mut nh = h.clone();
-                ui.checkbox(&mut nh.through_all, "Through all");
-                if !h.through_all {
-                    self.value_field(ui, "Depth", &format!("{name}.Depth"), "mm");
-                    self.value_field(ui, "Drill point angle (0 = flat)", &format!("{name}.DrillPointAngle"), "°");
-                }
-                egui::ComboBox::from_label("Head").selected_text(format!("{:?}", h.cut)).show_ui(ui, |ui| {
-                    ui.selectable_value(&mut nh.cut, HoleCut::None, "None");
-                    ui.selectable_value(&mut nh.cut, HoleCut::Counterbore, "Counterbore");
-                    ui.selectable_value(&mut nh.cut, HoleCut::Countersink, "Countersink");
-                });
-                if h.cut != HoleCut::None {
-                    self.value_field(ui, "Head diameter", &format!("{name}.CutDiameter"), "mm");
-                    if h.cut == HoleCut::Counterbore {
-                        self.value_field(ui, "Head depth", &format!("{name}.CutDepth"), "mm");
-                    } else {
-                        self.value_field(ui, "Countersink angle", &format!("{name}.CountersinkAngle"), "°");
-                    }
-                }
-                if nh.through_all != h.through_all || nh.cut != h.cut {
-                    self.change(|d| {
-                        if let Some(FeatureKind::Hole(x)) = d.get_mut(id).map(|f| &mut f.kind) {
-                            x.through_all = nh.through_all;
-                            x.cut = nh.cut;
-                        }
-                    });
-                }
-            }
-            FeatureKind::AdditiveLoft(l) | FeatureKind::SubtractiveLoft(l) => {
-                ui.label(format!("Sections: {}", std::iter::once(l.profile).chain(l.sections.iter().copied()).map(|s| sketch_name(&self.doc, s)).collect::<Vec<_>>().join(" → ")));
-                let mut ruled = l.ruled;
-                if ui.checkbox(&mut ruled, "Ruled").changed() {
-                    self.change(|d| {
-                        if let Some(FeatureKind::AdditiveLoft(x) | FeatureKind::SubtractiveLoft(x)) = d.get_mut(id).map(|f| &mut f.kind) {
-                            x.ruled = ruled;
-                        }
-                    });
-                }
-            }
-            FeatureKind::AdditivePipe(p) | FeatureKind::SubtractivePipe(p) => {
-                ui.label(format!("Profile: {}", sketch_name(&self.doc, p.profile)));
-                ui.label(format!("Path: {}", sketch_name(&self.doc, p.spine)));
-                let mut fr = p.frenet;
-                if ui.checkbox(&mut fr, "Frenet").changed() {
-                    self.change(|d| {
-                        if let Some(FeatureKind::AdditivePipe(x) | FeatureKind::SubtractivePipe(x)) = d.get_mut(id).map(|f| &mut f.kind) {
-                            x.frenet = fr;
-                        }
-                    });
-                }
-            }
-        }
-        ui.separator();
-        ui.horizontal(|ui| {
-            let mut sup = f.suppressed;
-            if ui.checkbox(&mut sup, "Suppressed").changed() {
-                self.change(|d| d.get_mut(id).unwrap().suppressed = sup);
-            }
-            if f.kind.is_solid_feature() {
-                let is_tip = self.doc.tip == Some(id);
-                if ui.selectable_label(is_tip, "Tip").on_hover_text("Stop the body after this feature").clicked() {
-                    self.change(|d| d.tip = if is_tip { None } else { Some(id) });
-                }
-            }
-            if ui.button("🗑 Delete").clicked() {
-                self.try_delete(DeleteWhat::Feature(id), OnUsers::Refuse);
-            }
-        });
-    }
-
-    fn variables(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Variables");
-        let params: Vec<(String, String)> = self.doc.parameters.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        let (vals, errs) = self.doc.evaluate_expressions();
-        let mut delete: Option<String> = None;
-        let mut edit: Option<(String, String)> = None;
-        let mut release: Option<String> = None;
-        egui::Grid::new("vars").num_columns(4).striped(true).show(ui, |ui| {
-            for (k, v) in &params {
-                ui.label(egui::RichText::new(k).monospace());
-                let key = format!("param:{k}");
-                let driven = self.doc.driven.get(k).cloned();
-                if driven.is_some() {
-                    ui.add_enabled(false, egui::Label::new(egui::RichText::new(format!("🔒 {v}")).monospace()));
-                } else {
-                    let buf = self.fields.entry(key.clone()).or_insert_with(|| v.clone());
-                    if ui.add(egui::TextEdit::singleline(buf).desired_width(110.0)).lost_focus() && *buf != *v {
-                        edit = Some((k.clone(), buf.clone()));
-                    }
-                }
-                match (vals.get(&key), errs.get(&key)) {
-                    (_, Some(e)) => {
-                        ui.colored_label(egui::Color32::from_rgb(230, 80, 60), "⚠").on_hover_text(e.to_string());
-                    }
-                    (Some(x), _) => {
-                        ui.weak(fmt_num(*x));
-                    }
-                    _ => {
-                        ui.label("");
-                    }
-                }
-                if let Some(src) = &driven {
-                    if ui.small_button("Release").on_hover_text(format!("Driven by {src}. Release to edit it here.")).clicked() {
-                        release = Some(k.clone());
-                    }
-                } else if ui.small_button("🗑").on_hover_text("Delete variable").clicked() {
-                    delete = Some(k.clone());
-                }
-                ui.end_row();
-            }
-        });
-        for (k, src) in &self.doc.driven {
-            if self.doc.parameters.contains_key(k) {
-                ui.weak(format!("🔒 {k}: Driven by {src}"));
-            }
-        }
-        if let Some(k) = release {
-            self.change(|d| {
-                d.release_driven(&k);
-            });
-        }
-        ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.new_param.0).hint_text("name").desired_width(70.0));
-            ui.add(egui::TextEdit::singleline(&mut self.new_param.1).hint_text("value or formula").desired_width(100.0));
-            if ui.button("Add").clicked() && !self.new_param.0.trim().is_empty() {
-                let (n, v) = (self.new_param.0.trim().to_string(), self.new_param.1.trim().to_string());
-                let v = if v.is_empty() { "0".to_string() } else { v };
-                let before = self.doc.to_json();
-                match self.doc.set_parameter(&n, &v) {
-                    Ok(()) => {
-                        self.undo.push(before);
-                        self.new_param = (String::new(), String::new());
-                        self.after_change();
-                    }
-                    Err(e) => self.status = e.to_string(),
-                }
-            }
-        });
-        if let Some((k, v)) = edit {
-            let before = self.doc.to_json();
-            match self.doc.set_parameter(&k, &v) {
-                Ok(()) => {
-                    self.undo.push(before);
-                    self.after_change();
-                }
-                Err(e) => {
-                    self.status = e.to_string();
-                    self.fields.remove(&format!("param:{k}"));
-                }
-            }
-        }
-        if let Some(k) = delete {
-            self.try_delete(DeleteWhat::Param(k), OnUsers::Refuse);
-        }
-        let named: Vec<(String, f64)> = self.doc.available_names().into_iter().filter(|(n, _)| n.contains('.') && !n.ends_with("Length") && !n.ends_with("Length2") && !n.contains("Angle") && !n.ends_with("Offset") && !n.contains("Diameter") && !n.contains("Depth")).collect();
-        if !named.is_empty() {
-            ui.add_space(4.0);
-            ui.weak("Named dimensions");
-            for (n, v) in named {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(&n).monospace());
-                    ui.weak(fmt_num(v));
-                });
-            }
-        }
-    }
-
-    fn measurements(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Measurements");
-        let items = self.doc.measure_all();
-        let red = egui::Color32::from_rgb(230, 80, 60);
-        let mut delete: Option<String> = None;
-        let mut rename: Option<(String, String)> = None;
-        if items.is_empty() {
-            ui.weak("None yet. Add one below.");
-        }
-        egui::Grid::new("meas").num_columns(3).striped(true).show(ui, |ui| {
-            for (name, res) in &items {
-                let key = format!("meas:{name}");
-                let buf = self.fields.entry(key).or_insert_with(|| name.clone());
-                let resp = ui.add_sized([100.0, 20.0], egui::TextEdit::singleline(buf).font(egui::TextStyle::Monospace));
-                if resp.lost_focus() && *buf != *name {
-                    rename = Some((name.clone(), buf.trim().to_string()));
-                }
-                match res {
-                    Ok(m) => {
-                        let unit = dim_unit(m.dim);
-                        ui.label(format!("{} {unit}", fmt_num(m.value)));
-                    }
-                    Err(e) => {
-                        ui.colored_label(red, format!("⚠ {e}")).on_hover_text(e.to_string());
-                    }
-                }
-                if ui.small_button("🗑").on_hover_text("Delete measurement").clicked() {
-                    delete = Some(name.clone());
-                }
-                ui.end_row();
-            }
-        });
-        if let Some((from, to)) = rename {
-            let before = self.doc.to_json();
-            match self.doc.rename_measurement(&from, &to) {
-                Ok(()) => {
-                    self.undo.push(before);
-                    self.redo.clear();
-                    self.dirty = true;
-                }
-                Err(e) => self.status = e,
-            }
-            self.fields.retain(|k, _| !k.starts_with("meas:"));
-        }
-        if let Some(n) = delete {
-            self.change(|d| {
-                d.remove_measurement(&n);
-            });
-            self.fields.retain(|k, _| !k.starts_with("meas:"));
-        }
-
-        ui.add_space(4.0);
-        ui.weak("Add measurement");
-        egui::ComboBox::from_id_salt("meas_kind").selected_text(self.meas_kind.label()).width(210.0).show_ui(ui, |ui| {
-            for k in MeasKind::ALL {
-                ui.selectable_value(&mut self.meas_kind, k, k.label());
-            }
-        });
-        if self.meas_kind == MeasKind::Value {
-            let names = self.doc.available_names();
-            if !names.iter().any(|(n, _)| *n == self.meas_value_key) {
-                self.meas_value_key = names.first().map(|(n, _)| n.clone()).unwrap_or_default();
-            }
-            egui::ComboBox::from_id_salt("meas_value").selected_text(self.meas_value_key.clone()).width(210.0).show_ui(ui, |ui| {
-                for (n, v) in &names {
-                    ui.selectable_value(&mut self.meas_value_key, n.clone(), format!("{n}  ({})", fmt_num(*v)));
-                }
-            });
-        }
-        let need = self.meas_kind.faces_needed();
-        let faces: Vec<u32> = self.selection.iter().filter(|p| p.kind == PickKind::Face).map(|p| p.id + 1).collect();
-        if need > 0 {
-            let hint = if faces.len() == need { format!("Using selected face(s): {}", faces.iter().map(|f| format!("Face{f}")).collect::<Vec<_>>().join(", ")) } else { format!("Select {need} face(s) in the 3D view (ctrl-click for the second).") };
-            ui.weak(hint);
-        }
-        let ready = need == 0 || faces.len() == need;
-        if ui.add_enabled(ready, egui::Button::new("Add")).clicked() {
-            self.add_measurement(&faces);
         }
     }
 
@@ -1361,21 +1058,21 @@ impl App {
             }
         }
         let (spec, base) = match kind {
-            MeasKind::Volume => (MeasureSpec::Volume, "Volume".to_string()),
-            MeasKind::Area => (MeasureSpec::Area, "Area".to_string()),
-            MeasKind::BBoxX => (MeasureSpec::BBoxX, "BBoxX".to_string()),
-            MeasKind::BBoxY => (MeasureSpec::BBoxY, "BBoxY".to_string()),
-            MeasKind::BBoxZ => (MeasureSpec::BBoxZ, "BBoxZ".to_string()),
+            MeasKind::Volume => (fc_part::measure::MeasureSpec::Volume, "Volume".to_string()),
+            MeasKind::Area => (fc_part::measure::MeasureSpec::Area, "Area".to_string()),
+            MeasKind::BBoxX => (fc_part::measure::MeasureSpec::BBoxX, "BBoxX".to_string()),
+            MeasKind::BBoxY => (fc_part::measure::MeasureSpec::BBoxY, "BBoxY".to_string()),
+            MeasKind::BBoxZ => (fc_part::measure::MeasureSpec::BBoxZ, "BBoxZ".to_string()),
             MeasKind::Value => {
                 if self.meas_value_key.is_empty() {
                     return;
                 }
                 let b: String = self.meas_value_key.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
-                (MeasureSpec::Value { key: self.meas_value_key.clone() }, b)
+                (fc_part::measure::MeasureSpec::Value { key: self.meas_value_key.clone() }, b)
             }
-            MeasKind::FaceArea => (MeasureSpec::FaceArea { face: refs[0].clone() }, format!("FaceArea{}", faces[0])),
-            MeasKind::FaceDiameter => (MeasureSpec::FaceDiameter { face: refs[0].clone() }, format!("FaceDiameter{}", faces[0])),
-            MeasKind::FaceDistance => (MeasureSpec::FaceDistance { a: refs[0].clone(), b: refs[1].clone() }, format!("Distance{}_{}", faces[0], faces[1])),
+            MeasKind::FaceArea => (fc_part::measure::MeasureSpec::FaceArea { face: refs[0].clone() }, format!("FaceArea{}", faces[0])),
+            MeasKind::FaceDiameter => (fc_part::measure::MeasureSpec::FaceDiameter { face: refs[0].clone() }, format!("FaceDiameter{}", faces[0])),
+            MeasKind::FaceDistance => (fc_part::measure::MeasureSpec::FaceDistance { a: refs[0].clone(), b: refs[1].clone() }, format!("Distance{}_{}", faces[0], faces[1])),
         };
         let mut name = base.clone();
         let mut n = 2;
@@ -1398,32 +1095,66 @@ impl App {
     fn dialogs(&mut self, ctx: &egui::Context) {
         let Some(d) = self.dialog.take() else { return };
         let mut keep = true;
+        let modal = |title: &str| egui::Window::new(title.to_string()).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).min_width(320.0);
         match &d {
             Dialog::ConfirmDelete { what, users } => {
                 let what = what.clone();
-                egui::Window::new("Delete").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-                    ui.label("These formulas use it:");
-                    for u in users {
-                        ui.label(egui::RichText::new(format!("• {u}")).monospace());
-                    }
-                    ui.label("Delete it anyway and keep their current values as plain numbers?");
+                modal("Delete").show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        if ui.button("Delete and keep values").clicked() {
+                        ui.add(crate::icons::image(ui.ctx(), "Warning", 32.0));
+                        ui.vertical(|ui| {
+                            ui.label("These formulas use it:");
+                            for u in users {
+                                ui.label(egui::RichText::new(format!("• {u}")).monospace());
+                            }
+                            ui.label("Delete it anyway and keep their current values as plain numbers?");
+                        });
+                    });
+                    ui.add_space(8.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if widgets::push_button(ui, "dlg:delete", "Delete and keep values", 160.0, true).clicked() {
                             keep = false;
                             self.try_delete(what.clone(), OnUsers::Freeze);
                         }
-                        if ui.button("Cancel").clicked() {
+                        if widgets::push_button(ui, "dlg:cancel", "Cancel", 90.0, false).clicked() {
                             keep = false;
                         }
                     });
                 });
             }
             Dialog::Message(m) => {
-                egui::Window::new("freecad-rs").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-                    ui.label(m);
-                    if ui.button("OK").clicked() {
-                        keep = false;
-                    }
+                modal("freecad-rs").show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(crate::icons::image(ui.ctx(), "Warning", 32.0));
+                        ui.label(m);
+                    });
+                    ui.add_space(8.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if widgets::push_button(ui, "dlg:ok", "OK", 90.0, true).clicked() {
+                            keep = false;
+                        }
+                    });
+                });
+                if ctx.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Escape)) {
+                    keep = false;
+                }
+            }
+            Dialog::About => {
+                modal("About freecad-rs").show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(crate::icons::image(ui.ctx(), "PartDesignWorkbench", 48.0));
+                        ui.vertical(|ui| {
+                            ui.label(egui::RichText::new("freecad-rs").font(crate::theme::bold_font(16.0)));
+                            ui.label("A Rust reimplementation of FreeCAD's Sketcher and Part Design.");
+                            ui.label(egui::RichText::new("Icons © FreeCAD contributors, LGPL-2.1-or-later.").color(crate::theme::TEXT_DIM).small());
+                        });
+                    });
+                    ui.add_space(8.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if widgets::push_button(ui, "dlg:ok", "OK", 90.0, true).clicked() {
+                            keep = false;
+                        }
+                    });
                 });
             }
         }
@@ -1431,39 +1162,9 @@ impl App {
             self.dialog = Some(d);
         }
     }
-
-    fn shortcuts(&mut self, ctx: &egui::Context) {
-        if ctx.egui_wants_keyboard_input() {
-            return;
-        }
-        let (undo, redo, save, del) = ctx.input(|i| {
-            let cmd = i.modifiers.command;
-            (
-                cmd && !i.modifiers.shift && i.key_pressed(egui::Key::Z),
-                cmd && i.modifiers.shift && i.key_pressed(egui::Key::Z),
-                cmd && i.key_pressed(egui::Key::S),
-                i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace),
-            )
-        });
-        if self.editor.is_some() {
-            return;
-        }
-        if undo {
-            self.undo();
-        }
-        if redo {
-            self.redo();
-        }
-        if save {
-            self.save(false);
-        }
-        if del && !self.tree_sel.is_empty() {
-            self.delete_selected();
-        }
-    }
 }
 
-fn fmt_num(v: f64) -> String {
+pub fn fmt_num(v: f64) -> String {
     let s = format!("{v:.4}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
     if s == "-0" { "0".into() } else { s.to_string() }
@@ -1507,6 +1208,10 @@ impl App {
                 moved(&mut run, p, "world point");
             }
             Step::AtScreen(x, y) => moved(&mut run, Some(egui::pos2(x, y)), "screen point"),
+            Step::AtUi(name) => {
+                let p = widgets::lookup(&name).map(|r| r.center());
+                moved(&mut run, p, &format!("ui '{name}'"));
+            }
             Step::Down(b) => raw.events.push(run.button_event(b, true)),
             Step::Up(b) => raw.events.push(run.button_event(b, false)),
             Step::Click(b) => {
@@ -1544,7 +1249,18 @@ impl App {
                         _ => None,
                     }),
                     "editing" => Some(self.editor.is_some().to_string()),
+                    "task" => Some(self.task.is_some().to_string()),
+                    "picking" => Some(self.picking.to_string()),
                     "features" => Some(self.doc.features.len().to_string()),
+                    "support" => self.editor.as_ref().and_then(|e| self.doc.get(e.feature())).and_then(|f| match &f.kind {
+                        FeatureKind::Sketch(s) => Some(match &s.support {
+                            Support::XY => "XY".to_string(),
+                            Support::XZ => "XZ".to_string(),
+                            Support::YZ => "YZ".to_string(),
+                            Support::Face(fr) => format!("Face{}", fr.index),
+                        }),
+                        _ => None,
+                    }),
                     "measure" | "param" => {
                         let (n, want) = val.split_once(' ').unwrap_or((&val, ""));
                         let got = if what == "measure" { self.doc.measure(n).ok().map(|m| m.value) } else { self.doc.evaluate_expressions().0.get(&format!("param:{n}")).copied() };
@@ -1553,6 +1269,7 @@ impl App {
                     }
                     "banner" => Some(self.disk_changed.to_string()),
                     "dirty" => Some(self.dirty.to_string()),
+                    "undo" => Some(self.undo.len().to_string()),
                     "driven" => Some(self.doc.driven.contains_key(&val).to_string()).map(|s| if s == "true" { val.clone() } else { s }),
                     "volume" => self.doc.result().map(|s| format!("{:.3}", s.volume())),
                     "geometry" => self.editor.as_ref().and_then(|e| self.doc.get(e.feature())).and_then(|f| match &f.kind {
@@ -1583,6 +1300,7 @@ impl App {
                     self.path = None;
                     self.after_change();
                     self.dirty = false;
+                    self.vp.set_standard_view(StandardView::Isometric);
                 }
                 "saveto" => {
                     let p = PathBuf::from(&arg);
@@ -1619,6 +1337,45 @@ impl App {
         }
         self.input = Some(run);
     }
+
+    /// Clicks in the 3D view outside of sketch editing and attachment picking.
+    fn view_clicked(&mut self, ctx: &egui::Context, clicked: Option<Pick>) {
+        let multi = ctx.input(|i| i.modifiers.ctrl || i.modifiers.command);
+        let plane = |p: &Pick| self.planes_at.filter(|f| p.object >= *f).map(|f| p.object - f);
+        match clicked {
+            Some(p) if plane(&p).is_some() => {
+                // origin plane: select it like in the tree
+                self.origin_sel = Some(3 + plane(&p).unwrap());
+                self.tree_sel.clear();
+                self.selection.clear();
+            }
+            Some(p) => {
+                self.origin_sel = None;
+                if multi {
+                    if let Some(i) = self.selection.iter().position(|s| s.kind == p.kind && s.id == p.id && s.object == p.object) {
+                        self.selection.remove(i);
+                    } else {
+                        self.selection.push(p);
+                    }
+                } else {
+                    self.selection = vec![p];
+                }
+            }
+            None => {
+                if !multi {
+                    self.selection.clear();
+                    self.origin_sel = None;
+                }
+            }
+        }
+        self.vp.set_selection(self.selection.clone());
+        self.sync_origin_highlight();
+        if let Some(p) = self.selection.last() {
+            self.status = format!("Selected: {}", pick_name(&self.vp, p, self.planes_at));
+        } else if let Some(i) = self.origin_sel {
+            self.status = format!("Selected: {}", ORIGIN_ITEMS[i].0);
+        }
+    }
 }
 
 impl eframe::App for App {
@@ -1629,6 +1386,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
+        widgets::clear_registry();
         if self.first_frame {
             self.first_frame = false;
             if self.editor.is_none() {
@@ -1637,93 +1395,49 @@ impl eframe::App for App {
         }
         self.shortcuts(ctx);
         self.poll_disk(ctx);
-        egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
+        let title = format!("{}{} - freecad-rs", self.doc_title(), if self.dirty { " •" } else { "" });
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+
+        egui::Panel::top("menubar").frame(egui::Frame::new().fill(crate::theme::WINDOW).inner_margin(egui::Margin::symmetric(6, 2))).show(ui, |ui| self.menu_bar(ui));
+        egui::Panel::top("toolbar").frame(egui::Frame::new().fill(crate::theme::WINDOW).inner_margin(egui::Margin { left: 4, right: 4, top: 1, bottom: 3 })).show(ui, |ui| self.toolbars(ui));
         if self.disk_changed {
             self.disk_banner(ui);
         }
+        egui::Panel::bottom("status").frame(egui::Frame::new().fill(crate::theme::WINDOW).inner_margin(egui::Margin::symmetric(8, 3))).show(ui, |ui| self.status_bar(ui));
+        egui::Panel::left("model")
+            .resizable(true)
+            .default_size(300.0)
+            .size_range(220.0..=520.0)
+            .frame(egui::Frame::new().fill(crate::theme::PANEL).inner_margin(egui::Margin { left: 0, right: 2, top: 0, bottom: 0 }))
+            .show(ui, |ui| self.model_dock(ui));
 
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if let Some(ed) = &self.editor {
-                    ui.label(ed.status());
-                } else if let Some(h) = &self.hovered {
-                    ui.label(format!("Preselected: {} ({:.2}, {:.2}, {:.2})", pick_name(&self.vp, h), h.point[0], h.point[1], h.point[2]));
-                } else {
-                    ui.label(&self.status);
-                }
-            });
-        });
-
-        egui::Panel::left("model").default_size(280.0).show(ui, |ui| {
-            if self.editor.is_some() {
-                let mut ed = self.editor.take().unwrap();
-                let exit = egui::ScrollArea::vertical().show(ui, |ui| ed.panel_ui(&mut self.doc, ui)).inner;
-                self.editor = Some(ed);
-                if exit != EditorExit::None {
-                    self.finish_edit(exit);
-                }
-                return;
-            }
-            if self.picking_plane.is_some() {
-                self.plane_pick_panel(ui);
-                return;
-            }
-            self.tree(ui);
-            ui.separator();
-            egui::ScrollArea::vertical().id_salt("props").show(ui, |ui| {
-                self.properties(ui);
-                ui.separator();
-                self.variables(ui);
-                ui.separator();
-                self.measurements(ui);
-            });
-        });
-
+        let task_open = self.editor.is_some() || self.task.is_some() || self.picking;
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+            self.vp.right_inset = if task_open { tasks::TASK_W + 16.0 } else { 0.0 };
             let r = self.vp.ui(ui);
+            self.view_rect = r.response.rect;
             self.hovered = r.hovered.clone();
             if let Some(mut ed) = self.editor.take() {
                 ed.handle_viewport(&mut self.doc, &mut self.vp, &r, ctx);
                 self.editor = Some(ed);
                 return;
             }
-            if self.picking_plane.is_some() {
-                if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    self.end_plane_pick();
-                    self.status = "Ready".into();
-                } else if let Some(p) = r.clicked.clone() {
+            if self.picking {
+                if let Some(p) = r.clicked.clone() {
                     self.pick_support(&p);
                 }
                 self.draw_plane_labels(ui, ctx);
                 return;
             }
+            if self.show_origin {
+                self.draw_plane_labels(ui, ctx);
+            }
             if r.response.clicked() {
-                let multi = ctx.input(|i| i.modifiers.ctrl || i.modifiers.command);
-                match r.clicked {
-                    Some(p) => {
-                        if multi {
-                            if let Some(i) = self.selection.iter().position(|s| s.kind == p.kind && s.id == p.id && s.object == p.object) {
-                                self.selection.remove(i);
-                            } else {
-                                self.selection.push(p);
-                            }
-                        } else {
-                            self.selection = vec![p];
-                        }
-                    }
-                    None => {
-                        if !multi {
-                            self.selection.clear();
-                        }
-                    }
-                }
-                self.vp.set_selection(self.selection.clone());
-                if let Some(p) = self.selection.last() {
-                    self.status = format!("Selected: {}", pick_name(&self.vp, p));
-                }
+                self.view_clicked(ctx, r.clicked.clone());
             }
         });
 
+        self.task_panel(ctx);
         self.dialogs(ctx);
 
         // Screenshots requested by the input script carry their path as user data.
@@ -1752,7 +1466,7 @@ impl eframe::App for App {
             if !editor_busy {
                 *frames += 1;
             }
-            if *frames == 6 {
+            if *frames == 8 {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             }
             let shot = ctx.input(|i| {

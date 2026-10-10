@@ -3,39 +3,42 @@ wait 5
 demo
 saveto OUT/calc_link.fcrs
 wait 5
+at ui tab:Measure
+click
+wait 3
 # Volume, Surface area, Bounding box X via the Add control
-at screen 24 456
+at ui meas:add
 click
 wait 3
-at screen 112 427
+at ui combo:meas_kind
 click
 wait 3
-at screen 60 474
+at ui opt:meas_kind:Surface area
 click
 wait 3
-at screen 24 448
+at ui meas:add
 click
 wait 3
-at screen 112 445
+at ui combo:meas_kind
 click
 wait 3
-at screen 60 513
+at ui opt:meas_kind:Bounding box X
 click
 wait 3
-at screen 24 466
+at ui meas:add
 click
 wait 3
 # Face area of the picked top face
 at world 10 -15 10
 click
 wait 3
-at screen 112 474
+at ui combo:meas_kind
 click
 wait 3
-at screen 60 626
+at ui opt:meas_kind:Face area (pick 1 face)
 click
 wait 3
-at screen 24 513
+at ui meas:add
 click
 wait 5
 expect measure Volume 21050.2213
@@ -49,10 +52,16 @@ expect banner false
 expect driven thickness
 expect param thickness 25
 expect measure Volume 56626.1063
+at ui tab:Variables
+click
+wait 3
 shot OUT/calc_driven.png
+at ui tab:Measure
+click
+wait 3
 # Now with an unsaved edit the same kind of change only raises the banner
 expect dirty false
-at screen 24 552
+at ui meas:del:BBoxX
 click
 wait 3
 expect dirty true

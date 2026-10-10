@@ -12,26 +12,21 @@ pub struct PanelState {
     /// Constraint shown in the property editor, with its edit buffers (name, value).
     editing: Option<(usize, String, String)>,
     edit_error: Option<String>,
+    /// Constraint list filter (FreeCAD's "Filter" combo).
+    filter: Filter,
 }
 
-fn cmd_glyph(c: Cmd) -> Option<super::render::Glyph> {
-    use super::render::Glyph;
-    Some(match c {
-        Cmd::Coincident => Glyph::Coincident,
-        Cmd::PointOnObject => Glyph::PointOn,
-        Cmd::Horizontal => Glyph::H,
-        Cmd::Vertical => Glyph::V,
-        Cmd::Parallel => Glyph::Parallel,
-        Cmd::Perpendicular => Glyph::Perpendicular,
-        Cmd::Tangent => Glyph::Tangent,
-        Cmd::Equal => Glyph::Equal,
-        Cmd::Symmetric => Glyph::Symmetric,
-        Cmd::Block => Glyph::Block,
-        _ => return None,
-    })
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum Filter {
+    #[default]
+    All,
+    Geometric,
+    Datums,
+    Named,
+    Selected,
 }
 
-const GREEN: Color32 = Color32::from_rgb(60, 200, 60);
+const GREEN: Color32 = crate::theme::GREEN;
 
 fn list_text(ints: &[usize]) -> String {
     // FreeCAD numbers constraints from 1
@@ -43,60 +38,213 @@ fn list_text(ints: &[usize]) -> String {
     }
 }
 
+/// FreeCAD icon of a creation tool (construction-mode variant when `constr`).
+pub fn tool_icon(t: Tool, constr: bool) -> &'static str {
+    match (t, constr) {
+        (Tool::Select, _) => "Sketcher_EditSketch",
+        (Tool::Point, _) => "Sketcher_CreatePoint",
+        (Tool::Line, false) => "Sketcher_CreateLine",
+        (Tool::Line, true) => "Sketcher_CreateLine_Constr",
+        (Tool::Polyline, false) => "Sketcher_CreatePolyline",
+        (Tool::Polyline, true) => "Sketcher_CreatePolyline_Constr",
+        (Tool::Rectangle, false) => "Sketcher_CreateRectangle",
+        (Tool::Rectangle, true) => "Sketcher_CreateRectangle_Constr",
+        (Tool::CenterRectangle, false) => "Sketcher_CreateRectangle_Center",
+        (Tool::CenterRectangle, true) => "Sketcher_CreateRectangle_Center_Constr",
+        (Tool::Circle, false) => "Sketcher_CreateCircle",
+        (Tool::Circle, true) => "Sketcher_CreateCircle_Constr",
+        (Tool::Arc, false) => "Sketcher_CreateArc",
+        (Tool::Arc, true) => "Sketcher_CreateArc_Constr",
+        (Tool::Arc3, false) => "Sketcher_Create3PointArc",
+        (Tool::Arc3, true) => "Sketcher_Create3PointArc_Constr",
+        (Tool::Slot, false) => "Sketcher_CreateSlot",
+        (Tool::Slot, true) => "Sketcher_CreateSlot_Constr",
+    }
+}
+
+fn tool_title(t: Tool) -> (&'static str, &'static str) {
+    match t {
+        Tool::Select => ("Select", "Select and drag elements"),
+        Tool::Point => ("Point", "Creates a point"),
+        Tool::Line => ("Line", "Creates a line"),
+        Tool::Polyline => ("Polyline", "Creates a continuous polyline (right-click or Esc ends it)"),
+        Tool::Rectangle => ("Rectangle", "Creates a rectangle from two corners"),
+        Tool::CenterRectangle => ("Centered Rectangle", "Creates a rectangle from its center and a corner"),
+        Tool::Circle => ("Circle", "Creates a circle from its center and a rim point"),
+        Tool::Arc => ("Arc From Center", "Creates an arc from its center and its end points"),
+        Tool::Arc3 => ("Arc From 3 Points", "Creates an arc from its end points and a point on it"),
+        Tool::Slot => ("Slot", "Creates a slot (oblong) from two centers and the width"),
+    }
+}
+
+/// FreeCAD icon of a constraint command.
+pub fn cmd_icon(c: Cmd) -> &'static str {
+    match c {
+        Cmd::Coincident => "Constraint_PointOnPoint",
+        Cmd::PointOnObject => "Constraint_PointOnObject",
+        Cmd::Horizontal => "Constraint_Horizontal",
+        Cmd::Vertical => "Constraint_Vertical",
+        Cmd::Parallel => "Constraint_Parallel",
+        Cmd::Perpendicular => "Constraint_Perpendicular",
+        Cmd::Tangent => "Constraint_Tangent",
+        Cmd::Equal => "Constraint_EqualLength",
+        Cmd::Symmetric => "Constraint_Symmetric",
+        Cmd::Block => "Constraint_Block",
+        Cmd::Lock => "Constraint_Lock",
+        Cmd::DistanceX => "Constraint_HorizontalDistance",
+        Cmd::DistanceY => "Constraint_VerticalDistance",
+        Cmd::Distance => "Constraint_Length",
+        Cmd::Radius => "Constraint_Radius",
+        Cmd::Diameter => "Constraint_Diameter",
+        Cmd::Angle => "Constraint_InternalAngle",
+    }
+}
+
+fn cmd_title(c: Cmd) -> &'static str {
+    match c {
+        Cmd::Coincident => "Constrain Coincident",
+        Cmd::PointOnObject => "Constrain Point on Object",
+        Cmd::Horizontal => "Constrain Horizontal",
+        Cmd::Vertical => "Constrain Vertical",
+        Cmd::Parallel => "Constrain Parallel",
+        Cmd::Perpendicular => "Constrain Perpendicular",
+        Cmd::Tangent => "Constrain Tangent",
+        Cmd::Equal => "Constrain Equal",
+        Cmd::Symmetric => "Constrain Symmetric",
+        Cmd::Block => "Constrain Block",
+        Cmd::Lock => "Constrain Lock",
+        Cmd::DistanceX => "Constrain Horizontal Distance",
+        Cmd::DistanceY => "Constrain Vertical Distance",
+        Cmd::Distance => "Constrain Distance",
+        Cmd::Radius => "Constrain Radius",
+        Cmd::Diameter => "Constrain Diameter",
+        Cmd::Angle => "Constrain Angle",
+    }
+}
+
+/// Icon of a constraint in the constraint list (reference dimensions use the blue variants).
+pub fn constraint_icon(k: &fc_sketch::ConstraintKind, driving: bool) -> &'static str {
+    use fc_sketch::ConstraintKind as K;
+    let (icon, driven) = match k {
+        K::Coincident(..) => ("Constraint_PointOnPoint", ""),
+        K::Horizontal(_) | K::HorizontalPoints(..) => ("Constraint_Horizontal", ""),
+        K::Vertical(_) | K::VerticalPoints(..) => ("Constraint_Vertical", ""),
+        K::Parallel(..) => ("Constraint_Parallel", ""),
+        K::Perpendicular(..) => ("Constraint_Perpendicular", ""),
+        K::Tangent(..) | K::TangentAt(..) => ("Constraint_Tangent", ""),
+        K::Equal(..) => ("Constraint_EqualLength", ""),
+        K::PointOnObject(..) => ("Constraint_PointOnObject", ""),
+        K::Symmetric(..) | K::SymmetricLine(..) => ("Constraint_Symmetric", ""),
+        K::Distance(..) | K::DistanceLine(..) | K::PointLineDistance(..) => ("Constraint_Length", "Constraint_Length_Driven"),
+        K::DistanceX(..) => ("Constraint_HorizontalDistance", "Constraint_HorizontalDistance_Driven"),
+        K::DistanceY(..) => ("Constraint_VerticalDistance", "Constraint_VerticalDistance_Driven"),
+        K::LockX(..) | K::LockY(..) => ("Constraint_Lock", "Constraint_Lock_Driven"),
+        K::Radius(..) => ("Constraint_Radius", "Constraint_Radius_Driven"),
+        K::Diameter(..) => ("Constraint_Diameter", "Constraint_Diameter_Driven"),
+        K::Angle(..) | K::AngleBetween(..) => ("Constraint_InternalAngle", "Constraint_InternalAngle_Driven"),
+        K::Block(_) => ("Constraint_Block", ""),
+    };
+    if !driving && !driven.is_empty() { driven } else { icon }
+}
+
+fn element_icon(c: &fc_sketch::Curve) -> &'static str {
+    match c {
+        fc_sketch::Curve::Point { .. } => "Sketcher_Element_Point_StartingPoint",
+        fc_sketch::Curve::Line { .. } => "Sketcher_Element_Line_Edge",
+        fc_sketch::Curve::Circle { .. } => "Sketcher_Element_Circle_Edge",
+        fc_sketch::Curve::Arc { .. } => "Sketcher_Element_Arc_Edge",
+    }
+}
+
+/// One selectable list row: icon, text, optional right-aligned value. Returns the response.
+fn list_row(ui: &mut egui::Ui, reg: String, icon: &str, text: RichText, value: Option<RichText>, selected: bool, hovered_ext: bool) -> egui::Response {
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 22.0), egui::Sense::click());
+    crate::widgets::reg(reg, rect);
+    let p = ui.painter();
+    if selected {
+        p.rect_filled(rect, 2.0, crate::theme::SELECTION);
+    } else if resp.hovered() || hovered_ext {
+        p.rect_filled(rect, 2.0, crate::theme::HOVER_ROW);
+    }
+    crate::icons::paint(p, icon, egui::Rect::from_center_size(egui::pos2(rect.left() + 13.0, rect.center().y), egui::vec2(16.0, 16.0)), Color32::WHITE);
+    let mut right = rect.right() - 6.0;
+    if let Some(v) = value {
+        let g = egui::WidgetText::from(v).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body);
+        let pos = egui::pos2(rect.right() - 6.0 - g.size().x, rect.center().y - g.size().y * 0.5);
+        right = pos.x - 8.0;
+        ui.painter().galley(pos, g, crate::theme::TEXT);
+    }
+    let g = egui::WidgetText::from(text).into_galley(ui, Some(egui::TextWrapMode::Truncate), (right - rect.left() - 28.0).max(10.0), egui::TextStyle::Body);
+    ui.painter().galley(egui::pos2(rect.left() + 28.0, rect.center().y - g.size().y * 0.5), g, crate::theme::TEXT);
+    resp
+}
+
 impl SketchEditor {
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+    pub fn undo(&mut self, doc: &mut Document) {
+        self.undo_step(doc);
+    }
+    pub fn redo(&mut self, doc: &mut Document) {
+        self.redo_step(doc);
+    }
+    pub fn fit(&mut self) {
+        self.want_fit = true;
+    }
+
+    /// The Sketcher workbench toolbar: geometry, construction toggle, constraints.
     pub fn toolbar_ui(&mut self, doc: &mut Document, ui: &mut egui::Ui) {
-        for (t, label, key) in Tool::ALL {
-            if ui.selectable_label(self.tool.tool == t, label).on_hover_text(format!("Shortcut: {key}")).clicked() {
-                self.set_tool(t);
+        use crate::widgets::{tb_grip, tb_separator, tool_button, Action};
+        tb_grip(ui);
+        let tools = [Tool::Point, Tool::Polyline, Tool::Line, Tool::Arc, Tool::Arc3, Tool::Circle, Tool::Rectangle, Tool::CenterRectangle, Tool::Slot];
+        for t in tools {
+            let key = Tool::ALL.iter().find(|(x, _, _)| *x == t).map(|(_, _, k)| *k).unwrap_or("");
+            let (title, desc) = tool_title(t);
+            let id = format!("sk:{}", format!("{t:?}").to_lowercase());
+            if tool_button(ui, &Action::new(&id, tool_icon(t, self.construction), title, desc, key).checked(self.tool.tool == t)) {
+                self.set_tool(if self.tool.tool == t { Tool::Select } else { t });
             }
         }
-        if ui.selectable_label(self.construction, "Construction").on_hover_text("Toggle construction geometry: for the selected curves, or the creation mode (G, N)").clicked() {
+        tb_separator(ui);
+        let ci = if self.construction { "Sketcher_ToggleConstruction_Constr" } else { "Sketcher_ToggleConstruction" };
+        if tool_button(ui, &Action::new("sk:construction", ci, "Toggle Construction Geometry", "Toggles the selected geometry between normal and construction, or the creation mode when nothing is selected", "G, N").checked(self.construction)) {
             self.toggle_construction(doc);
         }
-        ui.separator();
-        for (c, label, key, tip) in Cmd::ALL {
-            let hover = format!("{label}: {tip}\nShortcut: {key}");
-            let clicked = match cmd_glyph(c) {
-                Some(g) => {
-                    let (r, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
-                    let fill = if resp.hovered() { Color32::from_rgb(255, 110, 70) } else { super::render::COL_DIM };
-                    super::render::badge(ui.painter(), r.center(), g, fill, None);
-                    resp.on_hover_text(hover).clicked()
-                }
-                None => ui.button(label).on_hover_text(hover).clicked(),
-            };
-            if clicked {
+        tb_separator(ui);
+        tb_grip(ui);
+        for (c, _label, key, tip) in Cmd::ALL {
+            if c == Cmd::Lock {
+                tb_separator(ui);
+            }
+            let id = format!("sk:{}", format!("{c:?}").to_lowercase());
+            if tool_button(ui, &Action::new(&id, cmd_icon(c), cmd_title(c), tip, key)) {
                 self.run_cmd_ui(doc, c);
             }
         }
-        if ui.button("Driving/Ref.").on_hover_text("Toggle the selected dimensions between driving and reference").clicked() {
+        tb_separator(ui);
+        if tool_button(ui, &Action::new("sk:driving", "Sketcher_ToggleConstraint", "Toggle Driving/Reference Constraint", "Toggles the selected dimensions between driving and reference (measuring only)", "")) {
             self.toggle_driving(doc);
         }
-        ui.separator();
-        if ui.button("Delete").on_hover_text("Delete the selection (Del)").clicked() {
+        if tool_button(ui, &Action::new("sk:delete", "Sketcher_DeleteGeometry", "Delete", "Deletes the selected elements and constraints", "Del").enabled(!self.sel.is_empty())) {
             self.delete_selection(doc, OnUsers::Refuse);
-        }
-        if ui.add_enabled(!self.undo.is_empty(), egui::Button::new("Undo")).on_hover_text("Cmd+Z").clicked() {
-            self.undo_step(doc);
-        }
-        if ui.add_enabled(!self.redo.is_empty(), egui::Button::new("Redo")).on_hover_text("Cmd+Shift+Z").clicked() {
-            self.redo_step(doc);
-        }
-        if ui.button("View sketch").on_hover_text("Fit the view to the sketch").clicked() {
-            self.want_fit = true;
         }
     }
 
     fn solver_messages(&mut self, doc: &Document, ui: &mut egui::Ui) {
         let Some(r) = self.report.clone() else { return };
         let sk = self.sk(doc);
-        ui.label(RichText::new("Solver messages").strong());
         let mut select: Option<Vec<usize>> = None;
+        let big = |t: &str, c: Color32| RichText::new(t).color(c).font(crate::theme::bold_font(14.0));
         if sk.geometry.is_empty() {
-            ui.label("Empty sketch");
+            ui.label(big("Empty sketch", crate::theme::TEXT));
         } else if !r.conflicting.is_empty() || r.status == SolveStatus::Conflicting {
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("Over-constrained:").color(COL_CONFLICT).strong());
+                ui.label(big("Over-constrained", COL_CONFLICT));
                 if ui.link(RichText::new(format!("({})", list_text(&r.conflicting))).color(COL_CONFLICT)).on_hover_text("Click to select these constraints").clicked() {
                     select = Some(r.conflicting.clone());
                 }
@@ -104,14 +252,14 @@ impl SketchEditor {
             ui.label(RichText::new(format!("Remove at least one of the following constraints: {}", list_text(&r.conflicting))).color(COL_CONFLICT).small());
         } else if !r.malformed.is_empty() {
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("Malformed constraints:").color(COL_CONFLICT).strong());
+                ui.label(big("Malformed constraints", COL_CONFLICT));
                 if ui.link(format!("({})", list_text(&r.malformed))).clicked() {
                     select = Some(r.malformed.clone());
                 }
             });
         } else if !r.redundant.is_empty() {
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("Redundant constraints:").color(COL_REDUNDANT).strong());
+                ui.label(big("Redundant constraints", COL_REDUNDANT));
                 if ui.link(RichText::new(format!("({})", list_text(&r.redundant))).color(COL_REDUNDANT)).on_hover_text("Click to select these constraints").clicked() {
                     select = Some(r.redundant.clone());
                 }
@@ -119,23 +267,23 @@ impl SketchEditor {
             ui.label(RichText::new(format!("Remove the following redundant constraint(s): {}", list_text(&r.redundant))).color(COL_REDUNDANT).small());
         } else if !r.partially_redundant.is_empty() {
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("Partially redundant:").color(COL_REDUNDANT).strong());
+                ui.label(big("Partially redundant", COL_REDUNDANT));
                 if ui.link(format!("({})", list_text(&r.partially_redundant))).clicked() {
                     select = Some(r.partially_redundant.clone());
                 }
             });
         } else if r.status == SolveStatus::Failed {
-            ui.label(RichText::new("Solver failed to converge").color(COL_CONFLICT));
+            ui.label(big("Solver failed to converge", COL_CONFLICT));
         } else if r.dof > 0 {
             ui.horizontal_wrapped(|ui| {
-                ui.label("Under-constrained:");
-                if ui.link(format!("{} Degree{} of Freedom", r.dof, if r.dof == 1 { "" } else { "s" })).on_hover_text("Click to select the elements that can still move").clicked() {
+                ui.label(big("Under-constrained:", crate::theme::TEXT));
+                if ui.link(RichText::new(format!("{} Degree{} of Freedom", r.dof, if r.dof == 1 { "" } else { "s" })).font(crate::theme::bold_font(14.0))).on_hover_text("Click to select the elements that can still move").clicked() {
                     let free: Vec<Sel> = (0..sk.geometry.len()).filter(|g| !self.fully.get(*g).copied().unwrap_or(false)).map(Sel::Edge).collect();
                     self.sel = free;
                 }
             });
         } else {
-            ui.label(RichText::new("Fully constrained").color(GREEN).strong());
+            ui.label(big("Fully constrained", GREEN));
         }
         if let Some(cs) = select {
             self.sel = cs.into_iter().map(Sel::Constraint).collect();
@@ -145,62 +293,58 @@ impl SketchEditor {
         }
     }
 
-    pub fn panel_ui(&mut self, doc: &mut Document, ui: &mut egui::Ui) -> EditorExit {
-        let mut exit = EditorExit::None;
+    /// The sketch edit task boxes (the host draws the Close/Cancel buttons and passes the
+    /// button pressed in `exit`). Returns how the editor should exit.
+    pub fn panel_ui(&mut self, doc: &mut Document, ui: &mut egui::Ui, exit: EditorExit) -> EditorExit {
+        use crate::widgets::task_box;
         self.panel_hover = None;
-        ui.horizontal(|ui| {
-            if ui.button(RichText::new("Close").strong()).on_hover_text("Leave the sketch, keeping the changes").clicked() {
-                exit = EditorExit::Close;
+        task_box(ui, "sketch_edit", "Sketcher_Sketch", "Sketch Edit", |ui| {
+            self.solver_messages(doc, ui);
+            if let Some((m, err)) = &self.message {
+                ui.label(RichText::new(m).color(if *err { COL_CONFLICT } else { crate::theme::TEXT_DIM }).small());
             }
-            if ui.button("Cancel").on_hover_text("Leave the sketch, discarding all changes").clicked() {
-                exit = EditorExit::Cancel;
-            }
-        });
-        ui.separator();
-        self.solver_messages(doc, ui);
-        if let Some((m, err)) = &self.message {
-            ui.label(RichText::new(m).color(if *err { COL_CONFLICT } else { ui.visuals().weak_text_color() }).small());
-        }
-
-        // refused delete
-        let mut freeze = false;
-        let mut drop_pending = false;
-        if let Some(pd) = &self.pending_delete {
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.label(RichText::new("These dimensions are used by formulas:").color(COL_CONFLICT));
-                for u in &pd.users {
-                    ui.label(format!("  • {u}"));
-                }
-                ui.horizontal(|ui| {
-                    if ui.button("Delete and keep their values").on_hover_text("The formulas are replaced by their current values").clicked() {
-                        freeze = true;
+            // refused delete
+            let mut freeze = false;
+            let mut drop_pending = false;
+            if let Some(pd) = &self.pending_delete {
+                ui.add_space(4.0);
+                egui::Frame::group(ui.style()).fill(Color32::from_rgb(60, 36, 36)).show(ui, |ui| {
+                    ui.label(RichText::new("These dimensions are used by formulas:").color(COL_CONFLICT));
+                    for u in &pd.users {
+                        ui.label(format!("  • {u}"));
                     }
-                    if ui.button("Cancel").clicked() {
-                        drop_pending = true;
-                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Delete and keep their values").on_hover_text("The formulas are replaced by their current values").clicked() {
+                            freeze = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            drop_pending = true;
+                        }
+                    });
                 });
-            });
-        }
-        if freeze {
-            if let Some(pd) = self.pending_delete.take() {
-                self.delete_items(doc, pd.constraints, pd.geometry, OnUsers::Freeze);
             }
-        }
-        if drop_pending {
-            self.pending_delete = None;
-        }
-
-        ui.separator();
-        ui.horizontal_wrapped(|ui| {
-            ui.checkbox(&mut self.auto_constraints, "Auto constraints").on_hover_text("Snap to points/curves/axes and add coincident, point-on-object, horizontal and vertical constraints while drawing");
-            ui.checkbox(&mut self.grid, "Grid snap");
-            ui.checkbox(&mut self.show_constraints, "Show constraints");
+            if freeze {
+                if let Some(pd) = self.pending_delete.take() {
+                    self.delete_items(doc, pd.constraints, pd.geometry, OnUsers::Freeze);
+                }
+            }
+            if drop_pending {
+                self.pending_delete = None;
+            }
         });
-
-        ui.separator();
-        self.constraint_list(doc, ui);
-        ui.separator();
-        self.element_list(doc, ui);
+        task_box(ui, "sketch_controls", "Sketcher_EditSketch", "Edit Controls", |ui| {
+            ui.checkbox(&mut self.auto_constraints, "Auto constraints").on_hover_text("Snap to points/curves/axes and add coincident, point-on-object, horizontal and vertical constraints while drawing");
+            ui.checkbox(&mut self.grid, "Grid snap").on_hover_text("Snap new points to the grid");
+            ui.checkbox(&mut self.show_constraints, "Show constraints").on_hover_text("Show constraint icons and dimensions in the view");
+        });
+        let n = self.sk(doc).constraints.len();
+        task_box(ui, "sketch_constraints", "Constraint_Dimension", &format!("Constraints ({n})"), |ui| {
+            self.constraint_list(doc, ui);
+        });
+        let n = self.sk(doc).geometry.len();
+        task_box(ui, "sketch_elements", "Sketcher_Element_Line_Edge", &format!("Elements ({n})"), |ui| {
+            self.element_list(doc, ui);
+        });
         if exit == EditorExit::Cancel {
             // the host restores the sketch; formulas and names edited meanwhile go back too
             doc.expressions = self.original_exprs.0.clone();
@@ -211,46 +355,77 @@ impl SketchEditor {
 
     fn constraint_list(&mut self, doc: &mut Document, ui: &mut egui::Ui) {
         let n = self.sk(doc).constraints.len();
-        ui.label(RichText::new(format!("Constraints ({n})")).strong());
+        ui.horizontal(|ui| {
+            ui.label("Filter");
+            let opts = [(Filter::All, "All"), (Filter::Geometric, "Geometric"), (Filter::Datums, "Datums"), (Filter::Named, "Named"), (Filter::Selected, "Selected")];
+            crate::widgets::combo(ui, "sk_filter", &mut self.panel.filter, &opts, ui.available_width() - 8.0);
+        });
+        ui.add_space(2.0);
         let rep = self.report.clone();
         let multi = ui.input(|i| i.modifiers.command || i.modifiers.ctrl || i.modifiers.shift);
         let mut clicked: Option<usize> = None;
-        for ci in 0..n {
-            let sk = self.sk(doc);
-            let c = &sk.constraints[ci];
-            let name = c.name.clone().unwrap_or_else(|| format!("Constraint{}", ci + 1));
-            let mut text = format!("{:>2}  {name}  ·  {}", ci + 1, geom::kind_name(&c.kind));
-            if let Some(v) = geom::display_value(&c.kind) {
-                let val = format!("{} {}", geom::fmt_num(v), geom::unit_of(&c.kind));
-                match doc.expressions.get(&self.ckey(doc, ci)) {
-                    Some(f) => text.push_str(&format!("  ƒx {f} = {val}")),
-                    None if !c.driving => text.push_str(&format!("  ({val})")),
-                    None => text.push_str(&format!("  {val}")),
+        let filter = self.panel.filter;
+        let sel_geo: Vec<usize> = self.sel.iter().filter_map(|s| match s {
+            Sel::Edge(g) => Some(*g),
+            Sel::Point(p) => Some(p.geo),
+            _ => None,
+        }).collect();
+        egui::Frame::new().fill(crate::theme::INPUT).stroke(egui::Stroke::new(1.0, crate::theme::BORDER)).corner_radius(3.0).inner_margin(2.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("sk_clist").max_height(260.0).auto_shrink([false, true]).show(ui, |ui| {
+                if n == 0 {
+                    ui.label(RichText::new("  No constraints").color(crate::theme::TEXT_DIM));
                 }
-            }
-            let mut rt = RichText::new(text);
-            if let Some(r) = &rep {
-                if r.conflicting.contains(&ci) || r.malformed.contains(&ci) {
-                    rt = rt.color(COL_CONFLICT);
-                } else if r.redundant.contains(&ci) || r.partially_redundant.contains(&ci) {
-                    rt = rt.color(COL_REDUNDANT);
+                for ci in 0..n {
+                    let sk = self.sk(doc);
+                    let c = &sk.constraints[ci];
+                    let dimensional = c.kind.is_dimensional();
+                    let show = match filter {
+                        Filter::All => true,
+                        Filter::Geometric => !dimensional,
+                        Filter::Datums => dimensional,
+                        Filter::Named => c.name.is_some(),
+                        Filter::Selected => self.is_sel(Sel::Constraint(ci)) || geom::point_refs(&c.kind).iter().any(|p| sel_geo.contains(&p.geo)),
+                    };
+                    if !show {
+                        continue;
+                    }
+                    let name = c.name.clone().unwrap_or_else(|| format!("Constraint{}", ci + 1));
+                    let value = geom::display_value(&c.kind).map(|v| {
+                        let val = format!("{} {}", geom::fmt_num(v), geom::unit_of(&c.kind));
+                        match doc.expressions.get(&self.ckey(doc, ci)) {
+                            Some(f) => RichText::new(format!("ƒx {f} = {val}")).color(Color32::from_rgb(130, 180, 255)),
+                            None if !c.driving => RichText::new(format!("({val})")).color(Color32::from_rgb(120, 160, 255)),
+                            None => RichText::new(val),
+                        }
+                    });
+                    let mut rt = RichText::new(name);
+                    if let Some(r) = &rep {
+                        if r.conflicting.contains(&ci) || r.malformed.contains(&ci) {
+                            rt = rt.color(COL_CONFLICT);
+                        } else if r.redundant.contains(&ci) || r.partially_redundant.contains(&ci) {
+                            rt = rt.color(COL_REDUNDANT);
+                        }
+                    }
+                    if !c.driving {
+                        rt = rt.italics();
+                    }
+                    let icon = constraint_icon(&c.kind, c.driving);
+                    let selected = self.is_sel(Sel::Constraint(ci));
+                    let hover_ext = self.hover == Some(Sel::Constraint(ci));
+                    let resp = list_row(ui, format!("constraint:{}", ci + 1), icon, rt, value, selected, hover_ext);
+                    let resp = resp.on_hover_text(format!("{} {}", geom::kind_name(&c.kind), if dimensional { "· double-click to edit" } else { "" }));
+                    if resp.hovered() {
+                        self.panel_hover = Some(Sel::Constraint(ci));
+                    }
+                    if resp.clicked() {
+                        clicked = Some(ci);
+                    }
+                    if resp.double_clicked() && dimensional {
+                        self.open_dim_edit(doc, ci, false, None);
+                    }
                 }
-            }
-            if !c.driving {
-                rt = rt.italics();
-            }
-            let selected = self.is_sel(Sel::Constraint(ci));
-            let resp = ui.selectable_label(selected, rt);
-            if resp.hovered() {
-                self.panel_hover = Some(Sel::Constraint(ci));
-            }
-            if resp.clicked() {
-                clicked = Some(ci);
-            }
-            if resp.double_clicked() && c.kind.is_dimensional() {
-                self.open_dim_edit(doc, ci, false, None);
-            }
-        }
+            });
+        });
         if let Some(ci) = clicked {
             if multi {
                 self.toggle_sel(Sel::Constraint(ci));
@@ -280,35 +455,37 @@ impl SketchEditor {
         let mut apply = false;
         let mut toggle = false;
         let mut delete = false;
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ui.label(RichText::new(format!("Constraint{}: {}", ci + 1, geom::kind_name(&c.kind))).strong());
+        ui.add_space(6.0);
+        egui::Frame::new().fill(crate::theme::ROW).stroke(egui::Stroke::new(1.0, crate::theme::BORDER)).corner_radius(4.0).inner_margin(8.0).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.add(crate::icons::image(ui.ctx(), constraint_icon(&c.kind, c.driving), 16.0));
+                ui.label(RichText::new(format!("Constraint{}: {}", ci + 1, geom::kind_name(&c.kind))).font(crate::theme::bold_font(13.0)));
+            });
             let (_, name, value) = self.panel.editing.as_mut().unwrap();
             if c.kind.is_dimensional() {
-                egui::Grid::new("sk_cprops").num_columns(2).show(ui, |ui| {
-                    ui.label("Name");
-                    let r1 = ui.add(egui::TextEdit::singleline(name).desired_width(140.0).hint_text("e.g. width"));
-                    ui.end_row();
-                    ui.label("Value");
-                    let r2 = ui.add(egui::TextEdit::singleline(value).desired_width(140.0)).on_hover_text("A number with units (25 mm, 30 deg), or a formula starting with '=' (=width/2)");
-                    ui.end_row();
-                    if (r1.lost_focus() || r2.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        apply = true;
-                    }
-                });
+                let r1 = crate::widgets::task_row(ui, "Name", |ui| ui.add(egui::TextEdit::singleline(name).desired_width(ui.available_width() - 4.0).hint_text("e.g. width")));
+                crate::widgets::reg("cprop:name", r1.rect);
+                let r2 = crate::widgets::task_row(ui, "Value", |ui| ui.add(egui::TextEdit::singleline(value).desired_width(ui.available_width() - 4.0)).on_hover_text("A number with units (25 mm, 30 deg), or a formula starting with '=' (=width/2)"));
+                crate::widgets::reg("cprop:value", r2.rect);
+                if (r1.lost_focus() || r2.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    apply = true;
+                }
                 ui.horizontal(|ui| {
-                    if ui.button("Apply").clicked() {
-                        apply = true;
-                    }
                     let mut driving = c.driving;
                     if ui.checkbox(&mut driving, "Driving").on_hover_text("Unchecked: reference dimension (only measures)").changed() {
                         toggle = true;
                     }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Apply").clicked() {
+                            apply = true;
+                        }
+                    });
                 });
             }
             if let Some(e) = &self.panel.edit_error {
                 ui.label(RichText::new(e).color(COL_CONFLICT).small());
             }
-            if ui.button("Delete constraint").clicked() {
+            if ui.add(egui::Button::image_and_text(crate::icons::image(ui.ctx(), "edit-delete", 14.0), "Delete constraint")).clicked() {
                 delete = true;
             }
         });
@@ -335,29 +512,34 @@ impl SketchEditor {
     }
 
     fn element_list(&mut self, doc: &mut Document, ui: &mut egui::Ui) {
-        let sk = self.sk(doc);
-        ui.label(RichText::new(format!("Elements ({})", sk.geometry.len())).strong());
+        let sk = self.sk(doc).clone();
         let multi = ui.input(|i| i.modifiers.command || i.modifiers.ctrl || i.modifiers.shift);
         let mut clicked = None;
-        for (gi, g) in sk.geometry.iter().enumerate() {
-            let full = self.fully.get(gi).copied().unwrap_or(false);
-            let mut t = format!("{:>2}  {}  {}", gi + 1, geom::geo_name(gi), geom::curve_name(&g.curve));
-            if g.construction {
-                t.push_str("  (construction)");
-            }
-            let mut rt = RichText::new(t);
-            if full && !self.invalid() {
-                rt = rt.color(GREEN);
-            }
-            let sel = if matches!(g.curve, fc_sketch::Curve::Point { .. }) { Sel::Point(fc_sketch::PointRef::start(gi)) } else { Sel::Edge(gi) };
-            let resp = ui.selectable_label(self.is_sel(sel), rt);
-            if resp.hovered() {
-                self.panel_hover = Some(sel);
-            }
-            if resp.clicked() {
-                clicked = Some(sel);
-            }
-        }
+        egui::Frame::new().fill(crate::theme::INPUT).stroke(egui::Stroke::new(1.0, crate::theme::BORDER)).corner_radius(3.0).inner_margin(2.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("sk_elist").max_height(200.0).auto_shrink([false, true]).show(ui, |ui| {
+                if sk.geometry.is_empty() {
+                    ui.label(RichText::new("  No elements").color(crate::theme::TEXT_DIM));
+                }
+                for (gi, g) in sk.geometry.iter().enumerate() {
+                    let full = self.fully.get(gi).copied().unwrap_or(false);
+                    let mut rt = RichText::new(format!("{}-{}", geom::geo_name(gi), geom::curve_name(&g.curve)));
+                    if g.construction {
+                        rt = RichText::new(format!("{}-{} (construction)", geom::geo_name(gi), geom::curve_name(&g.curve))).color(Color32::from_rgb(120, 160, 255));
+                    } else if full && !self.invalid() {
+                        rt = rt.color(GREEN);
+                    }
+                    let sel = if matches!(g.curve, fc_sketch::Curve::Point { .. }) { Sel::Point(fc_sketch::PointRef::start(gi)) } else { Sel::Edge(gi) };
+                    let hover_ext = self.hover == Some(sel);
+                    let resp = list_row(ui, format!("element:{}", gi + 1), element_icon(&g.curve), rt, None, self.is_sel(sel), hover_ext);
+                    if resp.hovered() {
+                        self.panel_hover = Some(sel);
+                    }
+                    if resp.clicked() {
+                        clicked = Some(sel);
+                    }
+                }
+            });
+        });
         if let Some(s) = clicked {
             if multi {
                 self.toggle_sel(s);
@@ -386,9 +568,10 @@ impl SketchEditor {
         let names: Vec<(String, f64)> = if de.value.trim_start().starts_with('=') { doc.available_names() } else { vec![] };
         let mut ok = false;
         let mut cancel = false;
-        let pos = de.pos;
-        egui::Area::new(egui::Id::new("sk_dim_edit")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
+        // keep the popup out from under the Tasks panel
+        let pos = egui::pos2(de.pos.x.min(self.free_right - 280.0).max(self.rect.left() + 4.0), de.pos.y);
+        egui::Area::new(egui::Id::new("sk_dim_edit")).order(egui::Order::Foreground).fade_in(false).fixed_pos(pos).show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).fill(Color32::from_rgb(40, 40, 40)).show(ui, |ui| {
                 ui.set_max_width(260.0);
                 ui.label(RichText::new(title).strong());
                 let vid = egui::Id::new("sk_dim_value");

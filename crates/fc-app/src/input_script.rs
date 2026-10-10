@@ -5,6 +5,9 @@
 //!   at sketch X Y        move pointer to sketch coordinates of the sketch being edited
 //!   at world X Y Z       move pointer to the screen projection of a world point
 //!   at screen X Y        move pointer to logical screen coordinates
+//!   at ui NAME           move pointer to the center of a named widget (see `widgets::reg`):
+//!                        tb:<action>, task:ok, task:cancel, plane:XY, tree:<feature name>,
+//!                        prop:<property>, field:<Feature.Param>, tab:<name>, combo:<id>, opt:<id>:<label>
 //!   down / up [right|middle]   press / release a mouse button at the pointer
 //!   click [right]        press + release
 //!   dclick               double click
@@ -13,6 +16,7 @@
 //!   scroll DX DY         scroll wheel
 //!   wait N               idle N frames
 //!   expect dof N | expect editing true|false | expect features N | expect volume V
+//!   expect task true|false | expect picking true|false | expect support XY|XZ|YZ|FaceN | expect undo N
 //!   demo | saveto PATH | external NAME EXPR   (test helpers: load the demo, save to PATH, and rewrite the open
 //!     file on disk the way Calc Canvas does: parameter NAME = EXPR, marked driven)
 //!   expect measure NAME V | param NAME V | driven NAME | banner true|false | dirty true|false
@@ -26,6 +30,7 @@ pub enum Step {
     AtSketch(f64, f64),
     AtWorld([f64; 3]),
     AtScreen(f32, f32),
+    AtUi(String),
     Down(PointerButton),
     Up(PointerButton),
     Click(PointerButton),
@@ -59,7 +64,8 @@ pub fn parse(src: &str) -> Result<Vec<Step>, String> {
                 Some("sketch") => Step::AtSketch(f(2)?, f(3)?),
                 Some("world") => Step::AtWorld([f(2)?, f(3)?, f(4)?]),
                 Some("screen") => Step::AtScreen(f(2)? as f32, f(3)? as f32),
-                _ => return Err(format!("line {}: at sketch|world|screen", ln + 1)),
+                Some("ui") => Step::AtUi(line.splitn(3, ' ').nth(2).unwrap_or("").trim().to_string()),
+                _ => return Err(format!("line {}: at sketch|world|screen|ui", ln + 1)),
             },
             "down" => Step::Down(button(1)),
             "up" => Step::Up(button(1)),

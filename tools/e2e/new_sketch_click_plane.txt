@@ -1,0 +1,103 @@
+# The user's flow: New sketch -> click the XY plane in the 3D view -> rectangle ->
+# dimensions -> Close -> Pad task panel -> OK -> check the volume. Then Cancel paths.
+wait 5
+at ui tb:sketch
+click
+wait 10
+expect picking true
+# a point of the XY plane that no other plane covers in the isometric view
+at world 20 -20 0
+wait 2
+shot OUT/plane_hover.png
+click
+wait 6
+expect picking false
+expect editing true
+expect support XY
+key G
+key R
+at sketch 0 0
+click
+at sketch 40 20
+click
+wait 3
+key Escape
+wait 2
+at sketch 20 0
+click
+key K
+key H
+wait 3
+type 45
+key Enter
+wait 3
+at sketch 45 10
+click
+key K
+key V
+wait 3
+type 25
+key Enter
+wait 3
+expect dof 0
+at ui task:close
+click
+wait 5
+expect editing false
+at ui tb:pad
+click
+wait 5
+expect task true
+shot OUT/click_plane_pad_task.png
+at ui field:Pad.Length
+click
+key A cmd
+type 8
+wait 4
+# live preview while typing
+expect volume 9000
+key Enter
+wait 3
+at ui task:ok
+click
+wait 3
+expect task false
+expect features 2
+expect volume 9000
+# one undo step for the whole Pad task
+key Z cmd
+wait 4
+expect features 1
+key Z shift cmd
+wait 4
+expect features 2
+# edit again with double-click, change, Cancel restores the old value
+# (more than egui's double-click delay after the last click)
+wait 150
+at ui tree:Pad
+wait 2
+dclick
+wait 4
+expect task true
+at ui field:Pad.Length
+click
+key A cmd
+type 20
+key Enter
+wait 3
+expect volume 22500
+at ui task:cancel
+click
+wait 3
+expect task false
+expect volume 9000
+# New sketch, then Cancel in the attachment task
+at ui tb:sketch
+click
+wait 6
+at ui task:cancel
+click
+wait 3
+expect picking false
+shot OUT/click_plane_done.png
+quit

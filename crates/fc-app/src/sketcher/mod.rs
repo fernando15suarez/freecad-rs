@@ -169,6 +169,8 @@ pub struct SketchEditor {
     /// Fit the view to the sketch on the next frame.
     want_fit: bool,
     frame: u64,
+    /// Right edge of the part of the view not covered by the Tasks panel.
+    free_right: f32,
 }
 
 static EMPTY: std::sync::LazyLock<Sketch> = std::sync::LazyLock::new(Sketch::default);
@@ -216,6 +218,7 @@ impl SketchEditor {
             panel: panel::PanelState::default(),
             want_fit: false,
             frame: 0,
+            free_right: f32::INFINITY,
         })
     }
 
@@ -378,6 +381,7 @@ impl SketchEditor {
             self.fit_view(doc, vp);
         }
         self.rect = resp.response.rect;
+        self.free_right = self.rect.right() - vp.right_inset;
 
         // scripted input (one step per frame)
         if self.script.is_some() {

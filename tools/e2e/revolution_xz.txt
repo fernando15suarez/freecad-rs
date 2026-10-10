@@ -1,12 +1,13 @@
 wait 5
-at screen 904 11
+at ui tb:sketch
 click
 wait 10
-# XZ plane
-at screen 140 199
+# XZ plane, clicked in the 3D view
+at world 20 0 20
 click
 wait 5
 expect editing true
+expect support XZ
 key G
 key R
 at sketch 5 0.5
@@ -36,12 +37,17 @@ type 20
 key Enter
 wait 3
 shot OUT/rev_sketch.png
-at screen 28 59
+at ui task:close
 click
 wait 5
-at screen 1112 11
+at ui tb:revolution
 click
 wait 6
 expect features 2
+expect task true
+shot OUT/revolution_task.png
+at ui task:ok
+click
+wait 3
 shot OUT/revolution.png
 quit

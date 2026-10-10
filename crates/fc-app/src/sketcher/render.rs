@@ -7,17 +7,17 @@ use fc_part::Document;
 use fc_sketch::{ConstraintKind as K, Curve, GeoId, PointPos, PointRef, Sketch, Vec2, H_AXIS, ROOT, V_AXIS};
 use std::f64::consts::PI;
 
-// FreeCAD DrawingParameters defaults
+// FreeCAD 1.1 edit-mode colors on the dark theme (measured from its 3D view)
 pub const COL_CURVE: C = C::WHITE;
-pub const COL_FULL: C = C::from_rgb(0, 255, 0);
+pub const COL_FULL: C = C::from_rgb(116, 184, 22);
 pub const COL_FULL_ELEM: C = C::from_rgb(128, 208, 160);
-pub const COL_CONSTRUCTION: C = C::from_rgb(0, 0, 220);
+pub const COL_CONSTRUCTION: C = C::from_rgb(64, 128, 255);
 pub const COL_CONSTRUCTION_FULL: C = C::from_rgb(143, 169, 253);
 pub const COL_INVALID: C = C::from_rgb(255, 109, 0);
-pub const COL_DIM: C = C::from_rgb(255, 38, 0);
-pub const COL_REF: C = C::from_rgb(0, 38, 255);
+pub const COL_DIM: C = C::from_rgb(250, 82, 82);
+pub const COL_REF: C = C::from_rgb(90, 140, 255);
 pub const COL_EXPR: C = C::from_rgb(255, 127, 38);
-pub const COL_CURSOR_TEXT: C = C::from_rgb(0, 0, 255);
+pub const COL_CURSOR_TEXT: C = C::from_rgb(120, 170, 255);
 pub const COL_AXIS_X: C = C::from_rgb(204, 51, 51);
 pub const COL_AXIS_Y: C = C::from_rgb(51, 204, 51);
 pub const COL_ROOT: C = C::from_rgb(204, 51, 153);

@@ -6,7 +6,7 @@ use fc_part::{Document, FeatureKind, Placement};
 use fc_sketch::{Curve, Sketch};
 
 /// FreeCAD's default shape color (steel blue-gray).
-pub const BODY_COLOR: [f32; 4] = [0.80, 0.80, 0.80, 1.0];
+pub const BODY_COLOR: [f32; 4] = [0.60, 0.64, 0.68, 1.0];
 
 pub fn plane(p: &Placement) -> Plane {
     Plane { origin: p.origin, normal: p.normal(), xdir: p.xdir }
@@ -63,10 +63,13 @@ pub fn sketch_polylines(sk: &Sketch, pl: &Placement, include_construction: bool)
 }
 
 /// Visible, not-being-edited sketches drawn as white lines (FreeCAD shows unused sketches).
-pub fn sketch_overlay(doc: &Document, highlight: Option<fc_part::FeatureId>) -> Overlay {
+pub fn sketch_overlay(doc: &Document, highlight: Option<fc_part::FeatureId>, hidden: &std::collections::HashSet<fc_part::FeatureId>) -> Overlay {
     let mut o = Overlay::default();
     for f in &doc.features {
         let FeatureKind::Sketch(sf) = &f.kind else { continue };
+        if hidden.contains(&f.id) && highlight != Some(f.id) {
+            continue;
+        }
         let consumed = !doc.dependents(f.id).iter().all(|d| matches!(doc.get(*d).map(|g| &g.kind), Some(FeatureKind::Sketch(_))));
         let hl = highlight == Some(f.id);
         if consumed && !hl {

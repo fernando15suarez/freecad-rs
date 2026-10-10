@@ -1,11 +1,19 @@
+# New sketch via the attachment list, rectangle + dimensions, Pad task with a formula,
+# sketch on the top face, Pocket, undo/redo.
 wait 5
-at screen 904 11
+at ui tb:sketch
 click
 wait 10
-at screen 140 140
+expect picking true
+shot OUT/attach.png
+at ui plane:XY
 click
-wait 5
+wait 3
+at ui task:ok
+click
+wait 6
 expect editing true
+expect support XY
 key G
 key R
 at sketch 0 0
@@ -37,32 +45,39 @@ key Enter
 wait 3
 expect dof 0
 shot OUT/constrained.png
-at screen 28 59
+at ui task:close
 click
 wait 5
 expect editing false
-at screen 966 11
+at ui tb:pad
 click
 wait 5
+expect task true
 expect features 2
 expect volume 15000
-shot OUT/pad.png
-# formula in the Length field
-at screen 62 292
+shot OUT/pad_task.png
+# formula in the Length field of the task panel
+at ui field:Pad.Length
 click
 key A cmd
 type =2*7
 key Enter
 wait 4
 expect volume 21000
+at ui task:ok
+click
+wait 3
+expect task false
+shot OUT/pad.png
 # sketch on the top face
-at screen 768 300
+at world 25 15 14
 click
 wait 2
-at screen 904 11
+at ui tb:sketch
 click
 wait 6
 expect editing true
+expect support Face6
 key G
 key C
 at sketch 25 15
@@ -73,14 +88,17 @@ key Escape
 wait 2
 expect geometry 1
 shot OUT/face_sketch.png
-at screen 28 59
+at ui task:close
 click
 wait 5
-at screen 1029 11
+at ui tb:pocket
 click
 wait 6
 expect features 4
 expect volume 20607.301
+at ui task:ok
+click
+wait 3
 shot OUT/pocket.png
 key Z cmd
 wait 4

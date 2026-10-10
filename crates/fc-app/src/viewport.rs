@@ -2,7 +2,7 @@
 //! 3D viewport: camera, picking, GL painting via egui paint callback.
 use crate::camera::{self, Camera, FOV_Y};
 use crate::gpu::{self, Frame, Gpu, HlData, ObjUpload};
-use eframe::egui::{self, Color32, Pos2, Rect, Sense, Vec2};
+use eframe::egui::{self, Pos2, Rect, Sense, Vec2};
 use glam::{DMat4, DVec3, DVec4};
 use std::sync::{Arc, Mutex};
 
@@ -74,8 +74,9 @@ pub struct ViewportResponse {
 
 // ------------------------------------------------------------------- viewport
 
-const BG_TOP: [f32; 3] = [0.62, 0.71, 0.84];
-const BG_BOT: [f32; 3] = [0.89, 0.91, 0.95];
+const BG_TOP: [f32; 3] = crate::theme::VIEW_BG;
+const BG_BOT: [f32; 3] = crate::theme::VIEW_BG;
+const ANIM_SECS: f64 = 0.28;
 const EDGE_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const EDGE_WIDTH: f32 = 1.5;
 const HL_EDGE_WIDTH: f32 = 3.5;
@@ -108,6 +109,12 @@ pub struct Viewport {
     sketch_mode_req: bool,
     /// Sketch edit mode active this frame.
     sketch_mode: bool,
+    /// View change in progress: (from, to, start time); `None` start = begins next frame.
+    anim: Option<(Camera, Camera, Option<f64>)>,
+    /// Test hooks run without animation so scripted steps stay deterministic.
+    pub instant: bool,
+    /// Width (points) covered by the Tasks panel on the right: fits center in the rest.
+    pub right_inset: f32,
 }
 
 impl Viewport {
@@ -132,6 +139,9 @@ impl Viewport {
             gpu: Arc::new(Mutex::new(None)),
             sketch_mode_req: false,
             sketch_mode: false,
+            anim: None,
+            instant: false,
+            right_inset: 0.0,
         }
     }
 
@@ -344,8 +354,12 @@ impl Viewport {
             y0 = y0.min(y);
             y1 = y1.max(y);
         }
-        self.cam.target = center + right * (x0 + x1) * 0.5 + up * (y0 + y1) * 0.5;
-        let half_h = ((y1 - y0) * 0.5).max((x1 - x0) * 0.5 / aspect).max(1e-6) * 1.12;
+        let inset = self.right_inset.clamp(0.0, self.rect.width() * 0.5) as f64;
+        let aspect_eff = aspect * (1.0 - inset / (self.rect.width() as f64).max(1.0));
+        let half_h = ((y1 - y0) * 0.5).max((x1 - x0) * 0.5 / aspect_eff).max(1e-6) * 1.12;
+        // center the box in the part of the view not covered by the Tasks panel
+        let shift = inset * 0.5 * (2.0 * half_h / (self.rect.height() as f64).max(1.0));
+        self.cam.target = center + right * ((x0 + x1) * 0.5 + shift) + up * (y0 + y1) * 0.5;
         self.cam.dist = half_h / (FOV_Y * 0.5).tan();
         if self.cam.perspective {
             self.cam.dist += (mx - mn).length() * 0.5;
@@ -354,7 +368,76 @@ impl Viewport {
     }
 
     pub fn set_standard_view(&mut self, v: StandardView) {
-        let (f, u) = match v {
+        let (f, u) = Self::standard_dir(v);
+        self.anim = None;
+        self.cam.orient = camera::orient_from_dir(f, u);
+        self.fit_all();
+    }
+
+    /// Like `set_standard_view`, animated (toolbar / navigation cube).
+    pub fn animate_standard_view(&mut self, v: StandardView) {
+        let (f, u) = Self::standard_dir(v);
+        self.animate_to_dir(f, u, true);
+    }
+
+    /// Turn the camera to look along `fwd`, smoothly; `fit` also fits the scene.
+    pub fn animate_to_dir(&mut self, fwd: DVec3, up: DVec3, fit: bool) {
+        let from = self.current_cam();
+        self.cam = from;
+        self.anim = None;
+        self.cam.orient = camera::orient_from_dir(fwd, up);
+        if fit {
+            self.fit_all();
+        }
+        self.start_anim(from);
+    }
+
+    /// Fit the scene, smoothly.
+    pub fn animate_fit(&mut self) {
+        let from = self.current_cam();
+        self.cam = from;
+        self.anim = None;
+        self.fit_all();
+        self.start_anim(from);
+    }
+
+    fn start_anim(&mut self, from: Camera) {
+        let to = self.cam;
+        if !self.instant {
+            self.cam = from;
+            self.anim = Some((from, to, None));
+        }
+    }
+
+    /// The camera as shown right now (mid-animation included).
+    fn current_cam(&self) -> Camera {
+        self.cam
+    }
+
+    fn step_anim(&mut self, now: f64) -> bool {
+        let Some((from, to, start)) = &mut self.anim else { return false };
+        let t0 = *start.get_or_insert(now);
+        let t = ((now - t0) / ANIM_SECS).clamp(0.0, 1.0);
+        let e = t * t * (3.0 - 2.0 * t);
+        let (from, to) = (*from, *to);
+        self.cam.orient = from.orient.slerp(to.orient, e).normalize();
+        self.cam.target = from.target.lerp(to.target, e);
+        self.cam.dist = from.dist * (to.dist / from.dist).powf(e);
+        if t >= 1.0 {
+            self.cam = to;
+            self.anim = None;
+        }
+        true
+    }
+
+    /// Visible width and height of the view in model units at the focal plane.
+    pub fn view_size(&self) -> (f64, f64) {
+        let hh = self.cam.half_height();
+        (2.0 * hh * self.aspect(), 2.0 * hh)
+    }
+
+    fn standard_dir(v: StandardView) -> (DVec3, DVec3) {
+        match v {
             StandardView::Isometric => (DVec3::new(-1.0, 1.0, -1.0), DVec3::Z),
             StandardView::Front => (DVec3::Y, DVec3::Z),
             StandardView::Rear => (DVec3::NEG_Y, DVec3::Z),
@@ -362,12 +445,11 @@ impl Viewport {
             StandardView::Bottom => (DVec3::Z, DVec3::NEG_Y),
             StandardView::Right => (DVec3::NEG_X, DVec3::Z),
             StandardView::Left => (DVec3::X, DVec3::Z),
-        };
-        self.cam.orient = camera::orient_from_dir(f, u);
-        self.fit_all();
+        }
     }
 
     pub fn align_to_plane(&mut self, p: &Plane) {
+        self.anim = None;
         let n = DVec3::from(p.normal).normalize();
         let x = DVec3::from(p.xdir).normalize();
         let up = n.cross(x);
@@ -528,6 +610,9 @@ impl Viewport {
     fn handle_input(&mut self, ui: &egui::Ui, resp: &egui::Response) {
         let mods = ui.input(|i| i.modifiers);
         let d = resp.drag_delta();
+        if d != Vec2::ZERO && !(self.sketch_mode && resp.dragged_by(egui::PointerButton::Primary)) {
+            self.anim = None;
+        }
         if d != Vec2::ZERO {
             let middle = resp.dragged_by(egui::PointerButton::Middle);
             let prim = resp.dragged_by(egui::PointerButton::Primary);
@@ -592,6 +677,10 @@ impl Viewport {
         if self.pending_fit {
             self.fit_all();
         }
+        let now = ui.input(|i| i.time);
+        if self.step_anim(now) {
+            ui.ctx().request_repaint();
+        }
         self.handle_input(ui, &response);
 
         // hover / click picking
@@ -648,29 +737,41 @@ impl Viewport {
             })),
         });
 
+        // navigation cube: painted over the GL view, takes its own clicks (camera changes show next frame)
+        if let Some(a) = crate::navcube::ui(ui, rect, self.cam.right(), self.cam.up(), self.cam.fwd()) {
+            use crate::navcube::NavAction;
+            match a {
+                NavAction::View { fwd, up } => self.animate_to_dir(fwd, up, false),
+                NavAction::Orbit { yaw, pitch } => {
+                    let (up, right) = (self.cam.up(), self.cam.right());
+                    let q = glam::DQuat::from_axis_angle(up, yaw.to_radians()) * glam::DQuat::from_axis_angle(right, pitch.to_radians());
+                    let o = (q * self.cam.orient).normalize();
+                    self.animate_orient(o);
+                }
+                NavAction::Roll(deg) => {
+                    let q = glam::DQuat::from_axis_angle(self.cam.fwd(), -deg.to_radians());
+                    let o = (q * self.cam.orient).normalize();
+                    self.animate_orient(o);
+                }
+                NavAction::Drag(d) => {
+                    self.anim = None;
+                    self.orbit(d.x, d.y);
+                }
+            }
+        }
         self.draw_gizmo(ui, rect);
         ViewportResponse { hovered, clicked, response }
     }
 
+    fn animate_orient(&mut self, o: glam::DQuat) {
+        let from = self.cam;
+        self.anim = None;
+        self.cam.orient = o;
+        self.start_anim(from);
+    }
+
     fn draw_gizmo(&self, ui: &egui::Ui, rect: Rect) {
-        let p = ui.painter_at(rect);
-        let c = Pos2::new(rect.right() - 56.0, rect.bottom() - 56.0);
-        let len = 30.0;
-        let (r, u, f) = (self.cam.right(), self.cam.up(), self.cam.fwd());
-        let mut axes = [
-            (DVec3::X, Color32::from_rgb(220, 40, 40), "X"),
-            (DVec3::Y, Color32::from_rgb(40, 170, 40), "Y"),
-            (DVec3::Z, Color32::from_rgb(50, 90, 230), "Z"),
-        ];
-        // far axes first
-        axes.sort_by(|a, b| a.0.dot(f).partial_cmp(&b.0.dot(f)).unwrap().reverse());
-        p.circle_filled(c, 40.0, Color32::from_white_alpha(40));
-        for (a, col, name) in axes {
-            let tip = c + Vec2::new(a.dot(r) as f32, -a.dot(u) as f32) * len;
-            p.line_segment([c, tip], egui::Stroke::new(2.5, col));
-            p.circle_filled(tip, 6.5, col);
-            p.text(tip, egui::Align2::CENTER_CENTER, name, egui::FontId::proportional(10.0), Color32::WHITE);
-        }
+        crate::navcube::axis_cross(&ui.painter_at(rect), rect, self.cam.right(), self.cam.up(), self.cam.fwd());
     }
 }
 
