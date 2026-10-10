@@ -41,11 +41,24 @@ fn build_occt(out: &Path) {
 }
 
 fn main() {
-    let occt = occt_sys::occt_path();
-    if !occt.join("lib").join("libTKernel.a").exists() || !occt.join(PATCH_STAMP).exists() {
-        build_occt(&occt);
-        std::fs::write(occt.join(PATCH_STAMP), "").unwrap();
-    }
+    // A prebuilt OCCT 7.8 can be used instead: set OCCT_DIR to its install prefix (with include/ and lib/).
+    println!("cargo:rerun-if-env-changed=OCCT_DIR");
+    let occt = match std::env::var_os("OCCT_DIR") {
+        Some(dir) => PathBuf::from(dir),
+        None => {
+            let occt = occt_sys::occt_path();
+            // Other crates in the same build (Calc Canvas's calc-cad-step) build into the same
+            // directory through occt-sys: hold a lock so only one cmake runs there at a time.
+            std::fs::create_dir_all(&occt).unwrap();
+            let lock = std::fs::File::create(occt.join(".build.lock")).unwrap();
+            lock.lock().unwrap();
+            if !occt.join("lib").join("libTKernel.a").exists() || !occt.join(PATCH_STAMP).exists() {
+                build_occt(&occt);
+                std::fs::write(occt.join(PATCH_STAMP), "").unwrap();
+            }
+            occt
+        }
+    };
     println!("cargo:rerun-if-changed=occt-patch");
     println!("cargo:rustc-link-search=native={}", occt.join("lib").display());
     for lib in OCCT_LIBS {
