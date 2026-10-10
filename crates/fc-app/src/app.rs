@@ -948,8 +948,8 @@ impl App {
         let id = ui.id().with(("field", &canon));
         let initial = format!("{} {unit}", fmt_num(value)).trim().to_string();
         let buf = self.fields.entry(canon.clone()).or_insert_with(|| initial.clone());
-        let (fx_w, spin_w) = (22.0, 16.0);
-        let mut te = egui::TextEdit::singleline(buf).id(id).desired_width((width - fx_w - spin_w - 8.0).max(40.0)).margin(egui::Margin::symmetric(5, 2));
+        let (fx_w, spin_w) = (24.0, 18.0);
+        let mut te = egui::TextEdit::singleline(buf).id(id).desired_width((width - fx_w - spin_w - 14.0).max(40.0)).margin(egui::Margin::symmetric(5, 2));
         if locked {
             te = te.text_color(crate::theme::TEXT_DIM);
         }
@@ -995,6 +995,7 @@ impl App {
         }
         // fx button
         let icon = if bound.is_some() { "bound-expression" } else { "bound-expression-unset" };
+        ui.add_space(2.0);
         let (r, fx) = ui.allocate_exact_size(egui::vec2(fx_w, fx_w), egui::Sense::click());
         widgets::reg(format!("fx:{canon}"), r);
         if fx.hovered() {
@@ -1008,6 +1009,7 @@ impl App {
             ui.memory_mut(|m| m.request_focus(id));
         }
         // spin arrows (step 1; Shift: 0.1)
+        ui.add_space(2.0);
         let (sr, _) = ui.allocate_exact_size(egui::vec2(spin_w, fx_w), egui::Sense::hover());
         let enabled = bound.is_none() && !locked && ui.is_enabled();
         ui.painter().rect_stroke(sr.shrink2(egui::vec2(0.0, 1.0)), 3.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(80, 80, 80)), egui::StrokeKind::Inside);

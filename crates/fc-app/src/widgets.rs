@@ -225,23 +225,36 @@ pub fn task_row<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::U
 pub struct PropGrid {
     pub name_w: f32,
     row: usize,
+    /// The current group is collapsed: its rows are skipped.
+    collapsed: bool,
 }
 
 impl PropGrid {
     pub fn new(ui: &egui::Ui) -> Self {
-        PropGrid { name_w: (ui.available_width() * 0.45).clamp(90.0, 190.0), row: 0 }
+        PropGrid { name_w: (ui.available_width() * 0.45).clamp(90.0, 190.0), row: 0, collapsed: false }
     }
 
     /// Bold group header row ("Base", "Pad").
     pub fn group(&mut self, ui: &mut egui::Ui, title: &str) {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), theme::ROW_H), Sense::hover());
-        ui.painter().rect_filled(rect, 0.0, theme::GROUP_ROW);
-        ui.painter().text(Pos2::new(rect.left() + 5.0, rect.center().y), Align2::LEFT_CENTER, title, theme::bold_font(13.0), theme::TEXT);
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), theme::ROW_H), Sense::click());
+        reg(format!("group:{title}"), rect);
+        let id = egui::Id::new(("prop_group", title));
+        let mut collapsed = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+        if resp.clicked() {
+            collapsed = !collapsed;
+            ui.data_mut(|d| d.insert_temp(id, collapsed));
+        }
+        ui.painter().rect_filled(rect, 0.0, if resp.hovered() { Color32::from_rgb(74, 74, 74) } else { theme::GROUP_ROW });
+        let c = Pos2::new(rect.left() + 9.0, rect.center().y);
+        let pts = if collapsed { vec![c + egui::vec2(-2.5, -4.0), c + egui::vec2(3.0, 0.0), c + egui::vec2(-2.5, 4.0)] } else { vec![c + egui::vec2(-4.0, -2.5), c + egui::vec2(4.0, -2.5), c + egui::vec2(0.0, 3.0)] };
+        ui.painter().add(egui::Shape::convex_polygon(pts, Color32::from_gray(190), Stroke::NONE));
+        ui.painter().text(Pos2::new(rect.left() + 18.0, rect.center().y), Align2::LEFT_CENTER, title, theme::bold_font(13.0), theme::TEXT);
         self.row = 0;
+        self.collapsed = collapsed;
     }
 
     /// Property row: name cell on the left, `value` draws the editor in the right cell.
-    pub fn row<R>(&mut self, ui: &mut egui::Ui, name: &str, tip: &str, value: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    pub fn row<R: Default>(&mut self, ui: &mut egui::Ui, name: &str, tip: &str, value: impl FnOnce(&mut egui::Ui) -> R) -> R {
         let name_s = name.to_string();
         let tip_s = tip.to_string();
         self.row_with(
@@ -261,7 +274,10 @@ impl PropGrid {
     }
 
     /// Row with custom widgets in both cells; `reg_name` names the value cell for scripts.
-    pub fn row_with<R>(&mut self, ui: &mut egui::Ui, reg_name: &str, name: impl FnOnce(&mut egui::Ui), value: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    pub fn row_with<R: Default>(&mut self, ui: &mut egui::Ui, reg_name: &str, name: impl FnOnce(&mut egui::Ui), value: impl FnOnce(&mut egui::Ui) -> R) -> R {
+        if self.collapsed {
+            return R::default();
+        }
         let w = ui.available_width();
         let top = ui.cursor().top();
         let rect = Rect::from_min_size(Pos2::new(ui.cursor().left(), top), egui::vec2(w, theme::ROW_H));

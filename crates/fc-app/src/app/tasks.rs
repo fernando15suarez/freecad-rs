@@ -21,7 +21,7 @@ const CUT_OPTS: [(HoleCut, &str); 3] = [(HoleCut::None, "None"), (HoleCut::Count
 
 impl App {
     /// A labeled row in either layout.
-    fn prow<R>(&mut self, ui: &mut egui::Ui, lay: &mut Lay, label: &str, tip: &str, f: impl FnOnce(&mut Self, &mut egui::Ui) -> R) -> R {
+    fn prow<R: Default>(&mut self, ui: &mut egui::Ui, lay: &mut Lay, label: &str, tip: &str, f: impl FnOnce(&mut Self, &mut egui::Ui) -> R) -> R {
         match lay {
             Lay::Grid(g) => g.row(ui, label, tip, |ui| f(self, ui)),
             Lay::Task => task_row(ui, label, |ui| f(self, ui)),
@@ -229,7 +229,7 @@ impl App {
         ui.interact(rect, egui::Id::new("tasks_bg"), egui::Sense::click_and_drag());
         ui.painter().rect_filled(rect, 0.0, theme::PANEL);
         ui.painter().line_segment([rect.left_top(), rect.left_bottom()], egui::Stroke::new(1.0, theme::BORDER));
-        let inner = egui::Rect::from_min_max(rect.min + egui::vec2(8.0, 0.0), rect.max - egui::vec2(6.0, 4.0));
+        let inner = egui::Rect::from_min_max(rect.min + egui::vec2(10.0, 0.0), rect.max - egui::vec2(10.0, 4.0));
         ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
             ui.set_clip_rect(inner.expand2(egui::vec2(4.0, 0.0)));
             ui.spacing_mut().scroll.floating = false;
@@ -258,7 +258,9 @@ impl App {
             ui.add_space(((ui.available_width() - total) * 0.5).max(0.0));
             out.0 = widgets::push_button(ui, left.0, left.1, bw, right.is_none()).clicked();
             if let Some((id, text)) = right {
-                out.1 = widgets::push_button_enabled(ui, id, text, bw, true, right_enabled).clicked();
+                let r = widgets::push_button_enabled(ui, id, text, bw, true, right_enabled);
+                let r = if right_enabled { r } else { r.on_disabled_hover_text("Select a plane in the list or click one in the 3D view first") };
+                out.1 = r.clicked();
             }
         });
         ui.add_space(8.0);
@@ -318,7 +320,7 @@ impl App {
                 }
             });
             ui.add_space(6.0);
-            ui.label(RichText::new("Click a plane or a flat face of the part in the 3D view to sketch on it, or pick a base plane here and press OK.").color(theme::TEXT_DIM));
+            ui.label(RichText::new("Click a plane or a flat face of the part in the 3D view to sketch on it, or pick a base plane here and press OK.").color(Color32::from_gray(185)));
         });
         if !any_hover && hovered_plane.is_none() {
             self.vp.force_hover(None);

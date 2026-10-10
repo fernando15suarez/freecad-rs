@@ -23,9 +23,9 @@ pub fn planes() -> [Plane; 3] {
 /// Translucent plane colors, by normal axis (XY: Z blue, XZ: Y green, YZ: X red).
 pub fn plane_color(i: usize) -> [f32; 4] {
     match i {
-        0 => [0.35, 0.55, 1.0, 0.24],
-        1 => [0.35, 0.85, 0.45, 0.24],
-        _ => [1.0, 0.42, 0.40, 0.24],
+        0 => [0.35, 0.55, 1.0, 0.15],
+        1 => [0.35, 0.85, 0.45, 0.15],
+        _ => [1.0, 0.42, 0.40, 0.15],
     }
 }
 

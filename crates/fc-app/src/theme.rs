@@ -5,8 +5,8 @@ use eframe::egui::{self, Color32, CornerRadius, FontData, FontDefinitions, FontF
 pub const WINDOW: Color32 = Color32::from_rgb(25, 25, 25);
 pub const PANEL: Color32 = Color32::from_rgb(25, 25, 25);
 /// Property grid rows, task box bodies.
-pub const ROW: Color32 = Color32::from_rgb(35, 35, 35);
-pub const ROW_ALT: Color32 = Color32::from_rgb(40, 40, 40);
+pub const ROW: Color32 = Color32::from_rgb(33, 33, 33);
+pub const ROW_ALT: Color32 = Color32::from_rgb(42, 42, 42);
 pub const GROUP_ROW: Color32 = Color32::from_rgb(66, 66, 66);
 pub const BOX_BODY: Color32 = Color32::from_rgb(45, 45, 45);
 pub const BOX_HEADER: Color32 = Color32::from_rgb(38, 38, 38);

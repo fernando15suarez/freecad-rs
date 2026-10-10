@@ -117,13 +117,15 @@ impl App {
         widgets::dock_title(ui, "Model");
         let h = ui.available_height();
         egui::Panel::bottom("prop_tabs").frame(egui::Frame::new().inner_margin(egui::Margin { left: 0, right: 0, top: 2, bottom: 4 })).show(ui, |ui| {
+            let r = ui.max_rect();
+            ui.painter().line_segment([r.left_top(), r.right_top()], Stroke::new(1.0, theme::BORDER));
             if let Some(t) = widgets::tab_bar(ui, &["Data", "Variables", "Measure"], self.props_tab) {
                 self.props_tab = t;
             }
         });
-        egui::Panel::top("tree_split")
+        let tree = egui::Panel::top("tree_split")
             .resizable(true)
-            .default_size((h * 0.36).max(120.0))
+            .default_size((h * 0.33).max(120.0))
             .size_range(80.0..=(h - 140.0).max(100.0))
             .frame(egui::Frame::new().fill(theme::PANEL))
             .show(ui, |ui| {
@@ -132,6 +134,11 @@ impl App {
                     self.tree(ui);
                 });
             });
+        // splitter grip between the tree and the property view
+        let gb = tree.response.rect.center_bottom();
+        for dx in [-8.0, -4.0, 0.0, 4.0, 8.0] {
+            ui.painter().circle_filled(gb + egui::vec2(dx, -2.0), 1.1, Color32::from_gray(110));
+        }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::ROW).stroke(Stroke::new(1.0, theme::BORDER)).inner_margin(egui::Margin::same(1))).show(ui, |ui| {
             egui::ScrollArea::vertical().id_salt("props").auto_shrink([false, false]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -140,9 +147,13 @@ impl App {
                     2 => self.measurements(ui),
                     _ if self.task.is_some() || self.editor.is_some() || self.picking => {
                         // FreeCAD blanks the property view while a task dialog is open
-                        egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.add(egui::Label::new(RichText::new("Properties are edited in the Tasks panel while a task is open.").color(theme::TEXT_DIM)).wrap());
+                        let h = ui.available_height();
+                        ui.add_space((h * 0.35).max(10.0));
+                        ui.vertical_centered(|ui| {
+                            ui.add(crate::icons::image(ui.ctx(), "document-properties", 32.0).tint(Color32::from_gray(150)));
+                            ui.add_space(6.0);
+                            ui.label(RichText::new("Editing in the Tasks panel").color(Color32::from_gray(170)).font(theme::bold_font(13.0)));
+                            ui.label(RichText::new("Properties return when the task is closed").color(theme::TEXT_DIM));
                         });
                     }
                     _ => self.data_tab(ui),

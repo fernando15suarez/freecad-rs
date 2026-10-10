@@ -44,12 +44,11 @@ pub fn texture_ex(ctx: &egui::Context, name: &str, size: f32, disabled: bool) ->
                     if disabled {
                         for p in &mut img.pixels {
                             let [r, g, b, a] = p.to_array();
-                            // un-premultiply, gray it out, lighten, then fade
-                            let un = |v: u8| if a == 0 { 0.0 } else { v as f32 * 255.0 / a as f32 };
-                            let l = (un(r) * 0.3 + un(g) * 0.6 + un(b) * 0.1) * 0.45 + 70.0;
-                            let na = a as f32 * 0.42;
-                            let v = (l.min(255.0) * na / 255.0) as u8;
-                            *p = Color32::from_rgba_premultiplied(v, v, v, na as u8);
+                            // keep the colours, slightly desaturated, at ~38% opacity
+                            let f = 0.38f32;
+                            let l = (r as f32 * 0.3 + g as f32 * 0.6 + b as f32 * 0.1) * 0.35;
+                            let m = |v: u8| ((v as f32 * 0.65 + l) * f) as u8;
+                            *p = Color32::from_rgba_premultiplied(m(r), m(g), m(b), (a as f32 * f) as u8);
                         }
                     }
                     ctx.load_texture(format!("icon:{name}:{px}:{disabled}"), img, TextureOptions::LINEAR)

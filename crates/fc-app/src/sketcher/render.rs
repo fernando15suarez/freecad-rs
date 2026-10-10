@@ -98,7 +98,7 @@ fn flush_labels(p: &Painter) {
     LABELS.with(|l| {
         for (r, g, col, bg) in l.borrow_mut().drain(..) {
             let chip = r.expand2(egui::vec2(5.0, 1.5));
-            p.rect(chip, 3.0, bg.unwrap_or(C::from_rgba_unmultiplied(24, 24, 24, 235)), Stroke::new(1.0, col.gamma_multiply(0.35)), egui::StrokeKind::Inside);
+            p.rect_filled(chip, 3.0, bg.unwrap_or(C::from_rgb(31, 31, 31)));
             p.galley(r.min, g, col);
         }
     });
