@@ -304,3 +304,48 @@ fn sweep_along_out_of_order_path() {
     let v = ok(&doc, pipe).volume();
     assert!(v > PI * 15.0 && v < PI * 21.0, "{v}");
 }
+
+#[test]
+fn named_measurements_follow_parameters() {
+    use crate::measure::{Dim, MeasureError, MeasureSpec};
+    let mut doc = Document::new();
+    let (sk, wc) = rect(0.0, 0.0, 20.0, 10.0);
+    let s = doc.add_sketch(Support::XY, sk);
+    let pad = doc.add(FeatureKind::Pad(Extrude::new(s, 5.0)));
+    doc.set_parameter("width", "20 mm").unwrap();
+    doc.set_parameter("thick", "5").unwrap();
+    doc.set_expression(&format!("Sketch.Constraints[{wc}]"), "width").unwrap();
+    doc.set_expression("Pad.Length", "thick").unwrap();
+    doc.recompute();
+    assert_eq!(doc.parameter_dim("width"), Dim::Length);
+    assert_eq!(doc.parameter_dim("thick"), Dim::Length, "thick drives Pad.Length");
+    // Top (z = 5) and bottom (z = 0) faces of the pad.
+    let shape = ok(&doc, pad).clone();
+    let faces = shape.faces();
+    let top = faces.iter().position(|f| f.kind == 0 && f.normal[2] > 0.5).unwrap() + 1;
+    let bottom = faces.iter().position(|f| f.kind == 0 && f.normal[2] < -0.5).unwrap() + 1;
+    doc.set_measurement("V", MeasureSpec::Volume).unwrap();
+    doc.set_measurement("L", MeasureSpec::BBoxX).unwrap();
+    doc.set_measurement("t", MeasureSpec::FaceDistance { a: face_ref(pad, &shape, top).unwrap(), b: face_ref(pad, &shape, bottom).unwrap() }).unwrap();
+    doc.set_measurement("w", MeasureSpec::Value { key: "width".into() }).unwrap();
+    assert!(doc.set_measurement("width", MeasureSpec::Area).is_err());
+    let m = |doc: &Document, n: &str| doc.measure(n).unwrap().value;
+    assert!(close(m(&doc, "V"), 1000.0));
+    assert!(close(m(&doc, "t"), 5.0));
+    assert_eq!(doc.measure("V").unwrap().dim, Dim::Volume);
+    // Another program drives the parameters; the faces are re-found on the new body.
+    doc.set_driven_parameters(&[("width".into(), "30 mm".into()), ("thick".into(), "8 mm".into())], "Calc Canvas: Plate").unwrap();
+    doc.recompute();
+    assert!(close(m(&doc, "V"), 30.0 * 10.0 * 8.0));
+    assert!(close(m(&doc, "L"), 30.0));
+    assert!(close(m(&doc, "t"), 8.0));
+    assert!(close(m(&doc, "w"), 30.0));
+    assert_eq!(doc.driven.get("width").map(String::as_str), Some("Calc Canvas: Plate"));
+    // Round-trips through the file format.
+    let back = Document::from_json(&doc.to_json()).unwrap();
+    assert_eq!(back.measurements, doc.measurements);
+    assert_eq!(back.driven, doc.driven);
+    // A value that disappears is lost.
+    doc.set_measurement("gone", MeasureSpec::Value { key: "nope".into() }).unwrap();
+    assert!(matches!(doc.measure("gone"), Err(MeasureError::Lost(_))));
+}

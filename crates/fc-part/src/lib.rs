@@ -3,6 +3,7 @@
 
 pub mod expr;
 pub mod fcstd;
+pub mod measure;
 pub mod params;
 pub mod placement;
 pub mod profile;
@@ -280,6 +281,12 @@ pub struct Document {
     /// Bound expressions: canonical target (`Pad.Length`, `Sketch.Constraints[3]`) -> expression.
     #[serde(default)]
     pub expressions: std::collections::BTreeMap<String, String>,
+    /// Named measurements another program reads (see [`measure`]).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub measurements: std::collections::BTreeMap<String, measure::MeasureSpec>,
+    /// Parameters another program drives: name -> where the value comes from (e.g. "Calc Canvas: Bracket").
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub driven: std::collections::BTreeMap<String, String>,
     #[serde(skip)]
     pub expression_errors: std::collections::BTreeMap<String, expr::ExprError>,
     #[serde(skip)]
