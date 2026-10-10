@@ -41,8 +41,10 @@ fn tree_row(ui: &mut egui::Ui, s: RowSpec, menu: Option<&mut dyn FnMut(&mut egui
     let y = rect.center().y;
     let label_x = x0 + 14.0 + if s.eye.is_some() { 18.0 } else { 0.0 } + 20.0;
     let galley = egui::WidgetText::from(s.label.clone()).into_galley(ui, Some(egui::TextWrapMode::Truncate), (rect.right() - label_x - 4.0).max(10.0), egui::TextStyle::Body);
+    let label_w = galley.size().x;
     // FreeCAD highlights the label region of the selected item
-    let hl = Rect::from_min_max(Pos2::new(x0 + 14.0, rect.top() + 1.0), Pos2::new((label_x + galley.size().x + 6.0).min(rect.right()), rect.bottom() - 1.0));
+    let hl = Rect::from_min_max(Pos2::new(x0 + 14.0, rect.top() + 1.0), Pos2::new((label_x + label_w + 6.0).min(rect.right()), rect.bottom() - 1.0));
+    let label = if s.selected { s.label.clone().color(Color32::WHITE) } else { s.label.clone() };
     if s.selected {
         p.rect_filled(hl, 2.0, theme::SELECTION);
     } else if resp.hovered() {
@@ -64,7 +66,7 @@ fn tree_row(ui: &mut egui::Ui, s: RowSpec, menu: Option<&mut dyn FnMut(&mut egui
         let er = Rect::from_center_size(Pos2::new(x + 8.0, y), Vec2::splat(16.0));
         let eresp = ui.interact(er, ui.id().with((&s.reg, "eye")), Sense::click());
         widgets::reg(format!("{}:eye", s.reg), er);
-        crate::icons::paint(ui.painter(), if vis { "TreeItemVisible" } else { "TreeItemInvisible" }, er.shrink(1.0), if eresp.hovered() { Color32::WHITE } else { Color32::from_gray(200) });
+        crate::icons::paint(ui.painter(), if vis { "TreeItemVisible" } else { "TreeItemInvisible" }, er, if eresp.hovered() { Color32::WHITE } else { Color32::from_gray(215) });
         out.eye = eresp.on_hover_text(if vis { "Hide (Space)" } else { "Show (Space)" }).clicked();
         x += 18.0;
     }
@@ -73,6 +75,7 @@ fn tree_row(ui: &mut egui::Ui, s: RowSpec, menu: Option<&mut dyn FnMut(&mut egui
     if let Some(b) = s.badge {
         crate::icons::paint(ui.painter(), b, Rect::from_center_size(ir.right_bottom() - Vec2::new(3.0, 3.0), Vec2::splat(10.0)), Color32::WHITE);
     }
+    let galley = egui::WidgetText::from(label).into_galley(ui, Some(egui::TextWrapMode::Truncate), (rect.right() - label_x - 4.0).max(10.0), egui::TextStyle::Body);
     ui.painter().galley(Pos2::new(label_x, y - galley.size().y * 0.5), galley, theme::TEXT);
     let resp = if s.tip.is_empty() { resp } else { resp.on_hover_text(&s.tip) };
     if let Some(m) = menu {
@@ -116,7 +119,7 @@ impl App {
         });
         egui::Panel::top("tree_split")
             .resizable(true)
-            .default_size((h * 0.42).max(120.0))
+            .default_size((h * 0.36).max(120.0))
             .size_range(80.0..=(h - 140.0).max(100.0))
             .frame(egui::Frame::new().fill(theme::PANEL))
             .show(ui, |ui| {
@@ -131,6 +134,13 @@ impl App {
                 match self.props_tab {
                     1 => self.variables(ui),
                     2 => self.measurements(ui),
+                    _ if self.task.is_some() || self.editor.is_some() => {
+                        egui::Frame::new().fill(Color32::from_rgb(34, 44, 58)).inner_margin(egui::Margin::symmetric(8, 5)).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(RichText::new("Being edited in the Tasks panel").color(theme::TEXT));
+                        });
+                        ui.add_enabled_ui(false, |ui| self.data_tab(ui));
+                    }
                     _ => self.data_tab(ui),
                 }
             });
@@ -276,7 +286,7 @@ impl App {
         let dof = st.and_then(|s| s.solve.as_ref()).map(|r| r.dof).unwrap_or(0);
         let mut label = RichText::new(&f.label);
         if !visible {
-            label = label.color(theme::TEXT_DIM);
+            label = label.color(Color32::from_gray(155));
         }
         if err.is_some() {
             label = label.color(theme::ERROR);
@@ -390,7 +400,7 @@ impl App {
                     let b = s.bbox();
                     g.group(ui, "Body");
                     g.row(ui, "Volume", "", |ui| widgets::ro_value(ui, &format!("{} mm³", fmt_num(s.volume()))));
-                    g.row(ui, "Bounding box", "", |ui| widgets::ro_value(ui, &format!("{} x {} x {} mm", fmt_num(b[3] - b[0]), fmt_num(b[4] - b[1]), fmt_num(b[5] - b[2]))));
+                    g.row(ui, "Bounding box", "", |ui| widgets::ro_value(ui, &format!("{:.2} x {:.2} x {:.2} mm", b[3] - b[0], b[4] - b[1], b[5] - b[2])));
                     g.row(ui, "Features", "", |ui| widgets::ro_value(ui, &self.doc.features.len().to_string()));
                 }
             } else {

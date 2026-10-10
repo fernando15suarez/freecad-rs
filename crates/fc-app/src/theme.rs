@@ -7,7 +7,7 @@ pub const PANEL: Color32 = Color32::from_rgb(25, 25, 25);
 /// Property grid rows, task box bodies.
 pub const ROW: Color32 = Color32::from_rgb(35, 35, 35);
 pub const ROW_ALT: Color32 = Color32::from_rgb(40, 40, 40);
-pub const GROUP_ROW: Color32 = Color32::from_rgb(52, 52, 52);
+pub const GROUP_ROW: Color32 = Color32::from_rgb(66, 66, 66);
 pub const BOX_BODY: Color32 = Color32::from_rgb(45, 45, 45);
 pub const BOX_HEADER: Color32 = Color32::from_rgb(38, 38, 38);
 pub const INPUT: Color32 = Color32::from_rgb(25, 25, 25);
@@ -20,7 +20,7 @@ pub const TEXT_DIM: Color32 = Color32::from_rgb(140, 140, 140);
 pub const SELECTION: Color32 = Color32::from_rgb(54, 109, 163);
 pub const HOVER_ROW: Color32 = Color32::from_rgb(48, 58, 70);
 pub const ACCENT: Color32 = Color32::from_rgb(40, 125, 200);
-pub const OK_BUTTON: Color32 = Color32::from_rgb(33, 54, 77);
+pub const OK_BUTTON: Color32 = Color32::from_rgb(38, 96, 160);
 pub const GREEN: Color32 = Color32::from_rgb(140, 255, 91);
 pub const ERROR: Color32 = Color32::from_rgb(240, 90, 80);
 pub const WARNING: Color32 = Color32::from_rgb(235, 175, 50);

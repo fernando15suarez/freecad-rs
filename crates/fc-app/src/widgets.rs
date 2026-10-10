@@ -42,8 +42,8 @@ pub fn tooltip(ui: &mut egui::Ui, title: &str, desc: &str, shortcut: &str) {
 
 // --------------------------------------------------------------------- toolbar
 
-pub const TB_ICON: f32 = 22.0;
-pub const TB_BUTTON: f32 = 30.0;
+pub const TB_ICON: f32 = 24.0;
+pub const TB_BUTTON: f32 = 32.0;
 
 pub struct Action<'a> {
     pub id: &'a str,
@@ -92,6 +92,35 @@ pub fn tool_button_resp(ui: &mut egui::Ui, a: &Action) -> egui::Response {
     resp.on_hover_ui(|ui| tooltip(ui, a.title, a.desc, a.shortcut))
 }
 
+/// Tool button with a dropdown arrow (QToolButton MenuButtonPopup): the button runs the
+/// current variant, the arrow lists all variants. Returns (button clicked, variant chosen).
+pub fn split_tool_button(ui: &mut egui::Ui, main: &Action, variants: &[Action]) -> (bool, Option<usize>) {
+    let clicked = tool_button(ui, main);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(11.0, TB_BUTTON), Sense::click());
+    reg(format!("tb:{}:menu", main.id), rect);
+    if resp.hovered() {
+        ui.painter().rect_filled(rect.shrink2(egui::vec2(0.0, 3.0)), 3.0, theme::BUTTON_HOVER);
+    }
+    let c = rect.center();
+    ui.painter().add(egui::Shape::convex_polygon(vec![c + egui::vec2(-3.5, -1.5), c + egui::vec2(3.5, -1.5), c + egui::vec2(0.0, 2.5)], Color32::from_gray(170), Stroke::NONE));
+    let mut chosen = None;
+    egui::Popup::menu(&resp).show(|ui| {
+        ui.set_min_width(200.0);
+        for (i, v) in variants.iter().enumerate() {
+            let mut b = egui::Button::image_and_text(icons::image(ui.ctx(), v.icon, 20.0), v.title).selected(v.checked);
+            if !v.shortcut.is_empty() {
+                b = b.shortcut_text(v.shortcut);
+            }
+            let r = ui.add_enabled(v.enabled, b);
+            reg(format!("tb:{}", v.id), r.rect);
+            if r.on_hover_text(v.desc).clicked() {
+                chosen = Some(i);
+            }
+        }
+    });
+    (clicked, chosen)
+}
+
 /// Vertical toolbar separator (FreeCAD draws a dotted handle at each toolbar's start).
 pub fn tb_separator(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(9.0, TB_BUTTON), Sense::hover());
@@ -124,7 +153,7 @@ pub fn dock_title(ui: &mut egui::Ui, title: &str) {
 pub fn push_button(ui: &mut egui::Ui, id: &str, text: &str, width: f32, default: bool) -> egui::Response {
     let mut b = egui::Button::new(RichText::new(text).size(14.0)).min_size(egui::vec2(width, 26.0)).corner_radius(4.0);
     if default {
-        b = b.fill(theme::OK_BUTTON).stroke(Stroke::new(1.0, Color32::from_rgb(52, 82, 112)));
+        b = b.fill(theme::OK_BUTTON).stroke(Stroke::new(1.0, Color32::from_rgb(70, 130, 200)));
     }
     let r = ui.add(b);
     reg(id.to_string(), r.rect);
@@ -194,7 +223,7 @@ pub struct PropGrid {
 
 impl PropGrid {
     pub fn new(ui: &egui::Ui) -> Self {
-        PropGrid { name_w: (ui.available_width() * 0.42).clamp(90.0, 170.0), row: 0 }
+        PropGrid { name_w: (ui.available_width() * 0.45).clamp(90.0, 190.0), row: 0 }
     }
 
     /// Bold group header row ("Base", "Pad").

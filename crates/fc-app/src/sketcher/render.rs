@@ -84,16 +84,16 @@ pub fn arrow(p: &Painter, tip: Pos2, dir: V, col: C) {
 fn label(p: &Painter, c: Pos2, text: &str, col: C, bg: Option<C>) -> Rect {
     let g = p.layout_no_wrap(text.to_string(), FontId::proportional(DIM_FONT), col);
     let r = Rect::from_center_size(c, g.size());
-    if let Some(b) = bg {
-        p.rect_filled(r.expand(2.0), 3.0, b);
-    }
+    // FreeCAD breaks the dimension line around its text: blank it with the view background
+    let b = bg.unwrap_or(C::from_rgb(31, 31, 31));
+    p.rect_filled(r.expand2(egui::vec2(4.0, 1.0)), 3.0, b);
     p.galley(r.min, g, col);
     r
 }
 
 /// Constraint badge: rounded square filled with `fill`, white symbol.
 pub fn badge(p: &Painter, c: Pos2, g: Glyph, fill: C, ring: Option<C>) -> Rect {
-    let r = Rect::from_center_size(c, egui::vec2(17.0, 17.0));
+    let r = Rect::from_center_size(c, egui::vec2(15.0, 15.0));
     if let Some(rc) = ring {
         // conflicting / redundant: glowing halo + white border
         p.rect_filled(r.expand(6.0), 8.0, C::from_rgba_unmultiplied(rc.r(), rc.g(), rc.b(), 90));
@@ -106,7 +106,7 @@ pub fn badge(p: &Painter, c: Pos2, g: Glyph, fill: C, ring: Option<C>) -> Rect {
     let o = |x: f32, y: f32| c + egui::vec2(x, y);
     match g {
         Glyph::H | Glyph::V => {
-            p.text(c + egui::vec2(0.0, 0.5), Align2::CENTER_CENTER, if g == Glyph::H { "H" } else { "V" }, FontId::proportional(12.0), C::WHITE);
+            p.text(c + egui::vec2(0.0, 0.5), Align2::CENTER_CENTER, if g == Glyph::H { "H" } else { "V" }, FontId::proportional(10.5), C::WHITE);
         }
         Glyph::Parallel => {
             p.line_segment([o(-4.0, 5.0), o(0.0, -5.0)], w);

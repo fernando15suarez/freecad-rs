@@ -201,14 +201,42 @@ impl SketchEditor {
     pub fn toolbar_ui(&mut self, doc: &mut Document, ui: &mut egui::Ui) {
         use crate::widgets::{tb_grip, tb_separator, tool_button, Action};
         tb_grip(ui);
-        let tools = [Tool::Point, Tool::Polyline, Tool::Line, Tool::Arc, Tool::Arc3, Tool::Circle, Tool::Rectangle, Tool::CenterRectangle, Tool::Slot];
-        for t in tools {
+        let constr = self.construction;
+        let action = move |t: Tool, checked: bool| {
             let key = Tool::ALL.iter().find(|(x, _, _)| *x == t).map(|(_, _, k)| *k).unwrap_or("");
             let (title, desc) = tool_title(t);
-            let id = format!("sk:{}", format!("{t:?}").to_lowercase());
-            if tool_button(ui, &Action::new(&id, tool_icon(t, self.construction), title, desc, key).checked(self.tool.tool == t)) {
+            (format!("sk:{}", format!("{t:?}").to_lowercase()), tool_icon(t, constr), title, desc, key, checked)
+        };
+        // single tools and FreeCAD-style dropdown groups (arcs, rectangles)
+        let groups: [&[Tool]; 6] = [&[Tool::Point], &[Tool::Polyline], &[Tool::Line], &[Tool::Arc, Tool::Arc3], &[Tool::Circle], &[Tool::Rectangle, Tool::CenterRectangle]];
+        for group in groups {
+            if group.len() == 1 {
+                let t = group[0];
+                let (id, icon, title, desc, key, _) = action(t, false);
+                if tool_button(ui, &Action::new(&id, icon, title, desc, key).checked(self.tool.tool == t)) {
+                    self.set_tool(if self.tool.tool == t { Tool::Select } else { t });
+                }
+                continue;
+            }
+            let mem = egui::Id::new(("sk_group", group[0] as u8));
+            let cur = ui.data(|d| d.get_temp::<u8>(mem)).map(|i| i as usize).unwrap_or(0).min(group.len() - 1);
+            let cur = group.iter().position(|t| *t == self.tool.tool).unwrap_or(cur);
+            let infos: Vec<_> = group.iter().map(|t| action(*t, self.tool.tool == *t)).collect();
+            let variants: Vec<Action> = infos.iter().map(|(id, icon, title, desc, key, ch)| Action::new(id, icon, title, desc, key).checked(*ch)).collect();
+            let (id, icon, title, desc, key, _) = &infos[cur];
+            let main = Action::new(id, icon, title, desc, key).checked(group.contains(&self.tool.tool));
+            let (clicked, chosen) = crate::widgets::split_tool_button(ui, &main, &variants);
+            if let Some(i) = chosen {
+                ui.data_mut(|d| d.insert_temp(mem, i as u8));
+                self.set_tool(group[i]);
+            } else if clicked {
+                let t = group[cur];
                 self.set_tool(if self.tool.tool == t { Tool::Select } else { t });
             }
+        }
+        let (id, icon, title, desc, key, _) = action(Tool::Slot, false);
+        if tool_button(ui, &Action::new(&id, icon, title, desc, key).checked(self.tool.tool == Tool::Slot)) {
+            self.set_tool(if self.tool.tool == Tool::Slot { Tool::Select } else { Tool::Slot });
         }
         tb_separator(ui);
         let ci = if self.construction { "Sketcher_ToggleConstruction_Constr" } else { "Sketcher_ToggleConstruction" };
@@ -230,7 +258,7 @@ impl SketchEditor {
         if tool_button(ui, &Action::new("sk:driving", "Sketcher_ToggleConstraint", "Toggle Driving/Reference Constraint", "Toggles the selected dimensions between driving and reference (measuring only)", "")) {
             self.toggle_driving(doc);
         }
-        if tool_button(ui, &Action::new("sk:delete", "Sketcher_DeleteGeometry", "Delete", "Deletes the selected elements and constraints", "Del").enabled(!self.sel.is_empty())) {
+        if tool_button(ui, &Action::new("sk:delete", "edit-delete", "Delete", "Deletes the selected elements and constraints", "Del").enabled(!self.sel.is_empty())) {
             self.delete_selection(doc, OnUsers::Refuse);
         }
     }

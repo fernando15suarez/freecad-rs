@@ -129,14 +129,15 @@ impl App {
     /// (icon, title, description, shortcut, enabled) of an action.
     pub(super) fn act_info(&self, a: Act) -> (&'static str, &'static str, &'static str, String, bool) {
         let idle = self.idle();
-        let has_profile = idle && self.profile_sketch().is_some();
-        let two_sketches = idle && self.selected_sketches().len() >= 2;
+        // like FreeCAD, feature commands stay enabled and explain what to select when needed
+        let has_profile = idle;
+        let two_sketches = idle;
         let k = |s: &str| cmd_key(s);
         match a {
             Act::New => ("document-new", "New", "Creates a new empty document", k("Ctrl+N"), self.editor.is_none() && self.task.is_none()),
             Act::Open => ("document-open", "Open...", "Opens a freecad-rs document or imports a FreeCAD .FCStd file", k("Ctrl+O"), self.editor.is_none() && self.task.is_none()),
-            Act::Save => ("document-save", "Save", "Saves the active document", k("Ctrl+S"), self.editor.is_none() && self.task.is_none()),
-            Act::SaveAs => ("document-save-as", "Save As...", "Saves the active document under a new file name", k("Ctrl+Shift+S"), self.editor.is_none() && self.task.is_none()),
+            Act::Save => ("document-save", "Save", "Saves the active document", k("Ctrl+S"), !self.picking),
+            Act::SaveAs => ("document-save-as", "Save As...", "Saves the active document under a new file name", k("Ctrl+Shift+S"), !self.picking),
             Act::ExportStep => ("Std_Export", "Export STEP...", "Exports the body as a STEP file", String::new(), idle && self.doc.result().is_some()),
             Act::ExportStl => ("Std_Export", "Export STL...", "Exports the body as an STL mesh", String::new(), idle && self.doc.result().is_some()),
             Act::Undo => ("edit-undo", "Undo", "Undoes the last change", k("Ctrl+Z"), self.can_undo()),
@@ -339,6 +340,21 @@ impl App {
         });
     }
 
+    /// FreeCAD's document tab under the 3D view ("Unnamed : 1*").
+    pub(super) fn doc_tabs(&mut self, ui: &mut egui::Ui) {
+        let text = format!("{} : 1{}", self.doc_title(), if self.dirty { "*" } else { "" });
+        let g = ui.painter().layout_no_wrap(text.clone(), theme::bold_font(13.0), Color32::WHITE);
+        let top = ui.max_rect().top();
+        let rect = egui::Rect::from_min_size(egui::pos2(ui.max_rect().left() + 2.0, top), egui::vec2(g.size().x + 40.0, 26.0));
+        let resp = ui.interact(rect, egui::Id::new("doc_tab"), egui::Sense::hover());
+        let p = ui.painter();
+        p.rect_filled(rect, egui::CornerRadius { nw: 0, ne: 0, sw: 4, se: 4 }, Color32::from_rgb(40, 40, 40));
+        p.line_segment([rect.left_top(), rect.right_top()], egui::Stroke::new(2.0, theme::ACCENT));
+        crate::icons::paint(p, "Document", egui::Rect::from_center_size(egui::pos2(rect.left() + 15.0, rect.center().y), egui::vec2(16.0, 16.0)), Color32::WHITE);
+        p.galley(egui::pos2(rect.left() + 30.0, rect.center().y - g.size().y * 0.5), g, Color32::WHITE);
+        resp.on_hover_text(self.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "Not saved yet".into()));
+    }
+
     pub(super) fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.set_min_height(18.0);
@@ -346,14 +362,14 @@ impl App {
             let right = format!("{} mm x {} mm", fmt2(w), fmt2(h));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(RichText::new(right).color(theme::TEXT)).on_hover_text("Size of the visible area of the 3D view");
-                ui.add_space(14.0);
+                ui.add(egui::Separator::default().vertical().spacing(16.0));
                 ui.label(RichText::new("mm").color(theme::TEXT)).on_hover_text("Unit system: Standard (mm, kg, s, degree)");
-                ui.add_space(14.0);
+                ui.add(egui::Separator::default().vertical().spacing(16.0));
                 ui.label(RichText::new("CAD").color(theme::TEXT)).on_hover_text(
                     "Navigation style: CAD\n• Left click: select\n• Left or right drag: rotate (Shift + drag: pan)\n• Middle drag: pan\n• Wheel / pinch: zoom at the cursor\n• Two-finger scroll: rotate (Shift: pan)\n• Sketch: right drag rotates, middle drag pans",
                 );
                 ui.add(crate::icons::image(ui.ctx(), "view-rotate-right", 14.0));
-                ui.add_space(8.0);
+                ui.add(egui::Separator::default().vertical().spacing(16.0));
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     let text = if let Some(ed) = &self.editor {
                         ed.status().to_string()

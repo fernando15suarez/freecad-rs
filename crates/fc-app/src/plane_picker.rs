@@ -21,7 +21,7 @@ pub fn planes() -> [Plane; 3] {
 }
 
 /// FreeCAD's origin plane color (light purple, translucent).
-const PLANE_COLOR: [f32; 4] = [0.52, 0.55, 0.85, 0.35];
+const PLANE_COLOR: [f32; 4] = [0.45, 0.50, 0.85, 0.22];
 
 /// Translucent square for each origin plane, `half` mm from the origin to each side.
 pub fn plane_objects(half: f64) -> Vec<SceneObject> {

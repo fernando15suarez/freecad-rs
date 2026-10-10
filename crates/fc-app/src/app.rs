@@ -512,6 +512,7 @@ impl App {
         self.vp.set_selection(vec![]);
         self.rebuild_scene();
         if self.doc.result().is_none() {
+            self.vp.right_inset = tasks::TASK_W;
             self.vp.set_standard_view(StandardView::Isometric);
         }
         self.status = "Select a plane or a flat face in the 3D view, or pick a base plane from the list".into();
@@ -559,7 +560,7 @@ impl App {
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("plane_labels"))).with_clip_rect(ui.clip_rect());
         for p in crate::plane_picker::planes() {
             if let Some(pos) = self.vp.world_to_screen(p.placement.to_world(half, half)) {
-                painter.text(pos + egui::vec2(4.0, -4.0), egui::Align2::LEFT_BOTTOM, p.name, egui::FontId::proportional(13.0), egui::Color32::from_rgb(170, 175, 235));
+                painter.text(pos + egui::vec2(4.0, -4.0), egui::Align2::LEFT_BOTTOM, p.name, egui::FontId::proportional(13.0), egui::Color32::from_rgb(215, 220, 255));
             }
         }
     }
@@ -591,13 +592,18 @@ impl App {
         if let Some(ed) = SketchEditor::new(&self.doc, id) {
             self.snapshot();
             self.vp.align_to_plane(&scene::plane(&ed.placement()));
+            let mut ed = ed;
+            let has_geometry = matches!(self.doc.get(id).map(|f| &f.kind), Some(FeatureKind::Sketch(s)) if !s.sketch.geometry.is_empty());
+            if has_geometry {
+                ed.fit();
+            }
             let base_plane = matches!(self.doc.get(id).map(|f| &f.kind), Some(FeatureKind::Sketch(s)) if s.sketch.geometry.is_empty() && !matches!(s.support, Support::Face(_)));
             if base_plane {
                 // a new sketch on a base plane: origin in the middle of the free part of the view
                 let half = crate::plane_picker::plane_half_size(self.doc.result().map(|s| s.bbox()));
                 let pl = ed.placement();
                 let (a, b) = (pl.to_world(-half, -half), pl.to_world(half, half));
-                self.vp.right_inset = tasks::TASK_W + 16.0;
+                self.vp.right_inset = tasks::TASK_W;
                 self.vp.fit_box([a[0].min(b[0]), a[1].min(b[1]), a[2].min(b[2])], [a[0].max(b[0]), a[1].max(b[1]), a[2].max(b[2])]);
             }
             self.status = format!("Editing {}", self.doc.get(id).map(|f| f.label.clone()).unwrap_or_default());
@@ -918,8 +924,9 @@ impl App {
     // ------------------------------------------------------------- value fields
 
     /// Numeric property editor that also takes units and formulas (`=width/2`), with
-    /// FreeCAD's fx button. Inside a task, plain numbers apply live as you type.
-    /// Returns true if the document changed.
+    /// FreeCAD's fx button and spin arrows. A value driven by a formula shows its result in
+    /// blue; fx (or typing '=') edits the formula. Inside a task, plain numbers apply live
+    /// as you type. Returns true if the document changed.
     fn value_field(&mut self, ui: &mut egui::Ui, key: &str, unit: &str, width: f32) -> bool {
         let Some(canon) = self.doc.canonical_name(key) else {
             widgets::ro_value(ui, "—");
@@ -930,25 +937,23 @@ impl App {
         let locked = bound.as_ref().is_some_and(|e| self.doc.driven.contains_key(e.trim()));
         let mut changed = false;
         let id = ui.id().with(("field", &canon));
-        let buf = self.fields.entry(canon.clone()).or_insert_with(|| match &bound {
-            Some(e) => format!("={e}"),
-            None => format!("{} {unit}", fmt_num(value)).trim().to_string(),
-        });
-        let fx_w = 22.0;
-        let mut te = egui::TextEdit::singleline(buf).id(id).desired_width((width - fx_w - 4.0).max(40.0)).margin(egui::Margin::symmetric(5, 2));
+        let initial = format!("{} {unit}", fmt_num(value)).trim().to_string();
+        let buf = self.fields.entry(canon.clone()).or_insert_with(|| initial.clone());
+        let (fx_w, spin_w) = (22.0, 12.0);
+        let mut te = egui::TextEdit::singleline(buf).id(id).desired_width((width - fx_w - spin_w - 8.0).max(40.0)).margin(egui::Margin::symmetric(5, 2));
         if bound.is_some() {
-            te = te.text_color(egui::Color32::from_rgb(130, 180, 255));
+            te = te.text_color(egui::Color32::from_rgb(120, 175, 255));
         }
         let resp = ui.add_enabled(!locked, te);
         widgets::reg(format!("field:{canon}"), resp.rect);
         let resp = match &bound {
-            Some(_) => resp.on_hover_text(format!("= {} {unit}\nDriven by a formula. Type a plain number to remove it.", fmt_num(value))),
+            Some(e) => resp.on_hover_text(format!("= {e}\nDriven by a formula (fx edits it). Typing a plain number removes the formula.")),
             None => resp.on_hover_text("A number with units (25 mm, 30 deg) or a formula starting with '=' (=width/2)"),
         };
         // live preview while typing a plain number inside a task
         if resp.changed() && self.task.is_some() {
             let t = buf.trim().to_string();
-            if !t.starts_with('=') && !t.is_empty() {
+            if !t.starts_with('=') && !t.is_empty() && t != initial {
                 if let Ok(e) = fc_part::expr::parse(&t) {
                     let mut refs = Vec::new();
                     e.refs(&mut refs);
@@ -971,12 +976,15 @@ impl App {
         let commit = resp.lost_focus() && !ui.input(|i| i.key_pressed(egui::Key::Escape));
         if commit {
             let text = self.fields.get(&canon).cloned().unwrap_or_default().trim().to_string();
-            changed |= self.apply_field(&canon, &text);
+            if text != initial {
+                changed |= self.apply_field(&canon, &text);
+            }
             self.fields.remove(&canon);
         }
         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.fields.remove(&canon);
         }
+        // fx button
         let icon = if bound.is_some() { "bound-expression" } else { "bound-expression-unset" };
         let (r, fx) = ui.allocate_exact_size(egui::vec2(fx_w, fx_w), egui::Sense::click());
         widgets::reg(format!("fx:{canon}"), r);
@@ -989,6 +997,23 @@ impl App {
             let f = bound.clone().unwrap_or_else(|| fmt_num(value));
             self.fields.insert(canon.clone(), format!("={f}"));
             ui.memory_mut(|m| m.request_focus(id));
+        }
+        // spin arrows (step 1; Shift: 0.1)
+        let (sr, _) = ui.allocate_exact_size(egui::vec2(spin_w, fx_w), egui::Sense::hover());
+        let enabled = bound.is_none() && !locked && ui.is_enabled();
+        let fine = ui.input(|i| i.modifiers.shift);
+        for (up, half) in [(true, egui::Rect::from_min_max(sr.min, egui::pos2(sr.right(), sr.center().y))), (false, egui::Rect::from_min_max(egui::pos2(sr.left(), sr.center().y), sr.max))] {
+            let resp = ui.interact(half, id.with(up), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
+            let c = half.center();
+            let col = if !enabled { egui::Color32::from_gray(80) } else if resp.hovered() { egui::Color32::WHITE } else { egui::Color32::from_gray(160) };
+            let pts = if up { vec![c + egui::vec2(-3.5, 2.0), c + egui::vec2(3.5, 2.0), c + egui::vec2(0.0, -2.5)] } else { vec![c + egui::vec2(-3.5, -2.0), c + egui::vec2(3.5, -2.0), c + egui::vec2(0.0, 2.5)] };
+            ui.painter().add(egui::Shape::convex_polygon(pts, col, egui::Stroke::NONE));
+            if resp.clicked() {
+                let step = if fine { 0.1 } else { 1.0 };
+                let v = if up { value + step } else { value - step };
+                changed |= self.apply_field(&canon, &fmt_num(v));
+                self.fields.remove(&canon);
+            }
         }
         changed
     }
@@ -1378,6 +1403,30 @@ impl App {
     }
 }
 
+impl App {
+    /// Mouse interaction with the 3D view for the current mode.
+    fn view_input(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, r: &crate::viewport::ViewportResponse) {
+        if let Some(mut ed) = self.editor.take() {
+            ed.handle_viewport(&mut self.doc, &mut self.vp, r, ctx);
+            self.editor = Some(ed);
+            return;
+        }
+        if self.picking {
+            if let Some(p) = r.clicked.clone() {
+                self.pick_support(&p);
+            }
+            self.draw_plane_labels(ui, ctx);
+            return;
+        }
+        if self.show_origin {
+            self.draw_plane_labels(ui, ctx);
+        }
+        if r.response.clicked() {
+            self.view_clicked(ctx, r.clicked.clone());
+        }
+    }
+}
+
 impl eframe::App for App {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.drive_input(ctx, raw_input);
@@ -1413,31 +1462,17 @@ impl eframe::App for App {
 
         let task_open = self.editor.is_some() || self.task.is_some() || self.picking;
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
-            self.vp.right_inset = if task_open { tasks::TASK_W + 16.0 } else { 0.0 };
+            egui::Panel::bottom("doc_tabs").exact_size(28.0).frame(egui::Frame::new().fill(crate::theme::WINDOW)).show(ui, |ui| self.doc_tabs(ui));
+            self.vp.right_inset = if task_open { tasks::TASK_W } else { 0.0 };
             let r = self.vp.ui(ui);
             self.view_rect = r.response.rect;
             self.hovered = r.hovered.clone();
-            if let Some(mut ed) = self.editor.take() {
-                ed.handle_viewport(&mut self.doc, &mut self.vp, &r, ctx);
-                self.editor = Some(ed);
-                return;
-            }
-            if self.picking {
-                if let Some(p) = r.clicked.clone() {
-                    self.pick_support(&p);
-                }
-                self.draw_plane_labels(ui, ctx);
-                return;
-            }
-            if self.show_origin {
-                self.draw_plane_labels(ui, ctx);
-            }
-            if r.response.clicked() {
-                self.view_clicked(ctx, r.clicked.clone());
+            self.view_input(ui, ctx, &r);
+            if task_open {
+                self.task_panel(ui);
             }
         });
 
-        self.task_panel(ctx);
         self.dialogs(ctx);
 
         // Screenshots requested by the input script carry their path as user data.

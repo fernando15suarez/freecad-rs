@@ -193,7 +193,7 @@ impl Viewport {
                     let mut edge_verts = vec![];
                     for e in &o.edges {
                         for w in e.points.windows(2) {
-                            gpu::push_segment(&mut edge_verts, w[0], w[1], EDGE_COLOR, EDGE_WIDTH);
+                            gpu::push_segment(&mut edge_verts, w[0], w[1], if o.color[3] < 0.999 { [0.62, 0.66, 0.95, 0.9] } else { EDGE_COLOR }, EDGE_WIDTH);
                         }
                     }
                     ObjUpload { verts, indices: o.mesh.indices.clone(), edge_verts }
@@ -738,7 +738,8 @@ impl Viewport {
         });
 
         // navigation cube: painted over the GL view, takes its own clicks (camera changes show next frame)
-        if let Some(a) = crate::navcube::ui(ui, rect, self.cam.right(), self.cam.up(), self.cam.fwd()) {
+        let cube_rect = Rect::from_min_max(rect.min, egui::pos2(rect.right() - self.right_inset, rect.bottom()));
+        if let Some(a) = crate::navcube::ui(ui, cube_rect, self.cam.right(), self.cam.up(), self.cam.fwd()) {
             use crate::navcube::NavAction;
             match a {
                 NavAction::View { fwd, up } => self.animate_to_dir(fwd, up, false),

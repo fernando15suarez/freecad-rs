@@ -7,9 +7,7 @@ use crate::theme;
 use crate::widgets::{self, task_box, task_row, PropGrid};
 use egui::{Color32, RichText};
 
-pub const TASK_W: f32 = 320.0;
-/// Space kept free above the panel for the navigation cube.
-const TOP_GAP: f32 = 142.0;
+pub const TASK_W: f32 = 330.0;
 
 /// Where feature parameters are drawn: the Data tab's property grid or a task box.
 pub(super) enum Lay<'a> {
@@ -221,33 +219,29 @@ impl App {
         }
     }
 
-    pub(super) fn task_panel(&mut self, ctx: &egui::Context) {
-        if self.editor.is_none() && self.task.is_none() && !self.picking {
-            return;
-        }
+    /// Docked column over the right edge of the 3D view (drawn in the view's layer after the
+    /// view, so it takes the pointer there; the view keeps its size, so the camera does not
+    /// jump, and fits and the navigation cube use the free part of the view).
+    pub(super) fn task_panel(&mut self, ui: &mut egui::Ui) {
         let vr = self.view_rect;
-        let x = vr.right() - TASK_W - 10.0;
-        let y = vr.top() + TOP_GAP;
-        let max_h = (vr.bottom() - y - 10.0).max(120.0);
-        egui::Area::new(egui::Id::new("tasks_panel")).order(egui::Order::Middle).fixed_pos(egui::pos2(x, y)).show(ctx, |ui| {
-            egui::Frame::new()
-                .fill(Color32::from_rgba_unmultiplied(28, 28, 28, 242))
-                .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                .corner_radius(6.0)
-                .shadow(egui::Shadow { offset: [0, 2], blur: 10, spread: 0, color: Color32::from_black_alpha(90) })
-                .inner_margin(egui::Margin { left: 8, right: 8, top: 4, bottom: 8 })
-                .show(ui, |ui| {
-                    ui.set_width(TASK_W - 16.0);
-                    ui.set_max_height(max_h);
-                    widgets::dock_title(ui, "Tasks");
-                    if self.editor.is_some() {
-                        self.sketch_task(ui);
-                    } else if self.picking {
-                        self.attachment_task(ui);
-                    } else if self.task.is_some() {
-                        self.feature_task(ui);
-                    }
-                });
+        let rect = egui::Rect::from_min_max(egui::pos2(vr.right() - TASK_W, vr.top()), vr.max);
+        // swallow clicks/drags/scrolls on the panel background
+        ui.interact(rect, egui::Id::new("tasks_bg"), egui::Sense::click_and_drag());
+        ui.painter().rect_filled(rect, 0.0, theme::PANEL);
+        ui.painter().line_segment([rect.left_top(), rect.left_bottom()], egui::Stroke::new(1.0, theme::BORDER));
+        let inner = egui::Rect::from_min_max(rect.min + egui::vec2(8.0, 0.0), rect.max - egui::vec2(6.0, 4.0));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
+            ui.set_clip_rect(inner.expand2(egui::vec2(4.0, 0.0)));
+            ui.spacing_mut().scroll.floating = false;
+            ui.spacing_mut().scroll.bar_width = 9.0;
+            widgets::dock_title(ui, "Tasks");
+            if self.editor.is_some() {
+                self.sketch_task(ui);
+            } else if self.picking {
+                self.attachment_task(ui);
+            } else if self.task.is_some() {
+                self.feature_task(ui);
+            }
         });
     }
 
