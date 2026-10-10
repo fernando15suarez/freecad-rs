@@ -20,14 +20,21 @@ pub fn planes() -> [Plane; 3] {
     ]
 }
 
-/// FreeCAD's origin plane color (light purple, translucent).
-const PLANE_COLOR: [f32; 4] = [0.45, 0.50, 0.85, 0.22];
+/// Translucent plane colors, by normal axis (XY: Z blue, XZ: Y green, YZ: X red).
+pub fn plane_color(i: usize) -> [f32; 4] {
+    match i {
+        0 => [0.35, 0.55, 1.0, 0.24],
+        1 => [0.35, 0.85, 0.45, 0.24],
+        _ => [1.0, 0.42, 0.40, 0.24],
+    }
+}
 
 /// Translucent square for each origin plane, `half` mm from the origin to each side.
 pub fn plane_objects(half: f64) -> Vec<SceneObject> {
     planes()
         .iter()
-        .map(|p| {
+        .enumerate()
+        .map(|(i, p)| {
             let pl = p.placement;
             let c = |u: f64, v: f64| {
                 let w = pl.to_world(u, v);
@@ -50,7 +57,7 @@ pub fn plane_objects(half: f64) -> Vec<SceneObject> {
                 mesh: SceneMesh { positions, normals, indices, tri_face: vec![0; 4] },
                 edges: vec![SceneEdge { id: 0, points: pts }],
                 visible: true,
-                color: PLANE_COLOR,
+                color: plane_color(i),
             }
         })
         .collect()

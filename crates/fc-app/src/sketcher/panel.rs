@@ -245,13 +245,45 @@ impl SketchEditor {
         }
         tb_separator(ui);
         tb_grip(ui);
-        for (c, _label, key, tip) in Cmd::ALL {
-            if c == Cmd::Lock {
+        // FreeCAD 1.1 groups: unified coincident, horizontal/vertical, the geometric ones,
+        // then one "Dimension" dropdown with all the datum constraints
+        let groups: [&[Cmd]; 9] = [
+            &[Cmd::Coincident, Cmd::PointOnObject],
+            &[Cmd::Horizontal, Cmd::Vertical],
+            &[Cmd::Parallel],
+            &[Cmd::Perpendicular],
+            &[Cmd::Tangent],
+            &[Cmd::Equal],
+            &[Cmd::Symmetric],
+            &[Cmd::Block],
+            &[Cmd::DistanceX, Cmd::DistanceY, Cmd::Distance, Cmd::Radius, Cmd::Diameter, Cmd::Angle, Cmd::Lock],
+        ];
+        let info = |c: Cmd| {
+            let (_, _, key, tip) = Cmd::ALL.iter().copied().find(|x| x.0 == c).unwrap();
+            (format!("sk:{}", format!("{c:?}").to_lowercase()), cmd_icon(c), cmd_title(c), tip, key)
+        };
+        for (gi, group) in groups.iter().enumerate() {
+            if gi == 8 {
                 tb_separator(ui);
             }
-            let id = format!("sk:{}", format!("{c:?}").to_lowercase());
-            if tool_button(ui, &Action::new(&id, cmd_icon(c), cmd_title(c), tip, key)) {
-                self.run_cmd_ui(doc, c);
+            if group.len() == 1 {
+                let (id, icon, title, tip, key) = info(group[0]);
+                if tool_button(ui, &Action::new(&id, icon, title, tip, key)) {
+                    self.run_cmd_ui(doc, group[0]);
+                }
+                continue;
+            }
+            let mem = egui::Id::new(("sk_cgroup", gi));
+            let cur = ui.data(|d| d.get_temp::<u8>(mem)).map(|i| i as usize).unwrap_or(0).min(group.len() - 1);
+            let infos: Vec<_> = group.iter().map(|c| info(*c)).collect();
+            let variants: Vec<Action> = infos.iter().map(|(id, icon, title, tip, key)| Action::new(id, icon, title, tip, key)).collect();
+            let (id, icon, title, tip, key) = &infos[cur];
+            let (clicked, chosen) = crate::widgets::split_tool_button(ui, &Action::new(id, icon, title, tip, key), &variants);
+            if let Some(i) = chosen {
+                ui.data_mut(|d| d.insert_temp(mem, i as u8));
+                self.run_cmd_ui(doc, group[i]);
+            } else if clicked {
+                self.run_cmd_ui(doc, group[cur]);
             }
         }
         tb_separator(ui);

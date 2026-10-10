@@ -31,12 +31,12 @@ impl App {
     fn pbool(&mut self, ui: &mut egui::Ui, lay: &mut Lay, label: &str, tip: &str, v: &mut bool) -> bool {
         match lay {
             Lay::Grid(g) => g.row(ui, label, tip, |ui| widgets::yes_no(ui, v)),
-            Lay::Task => {
-                let r = ui.checkbox(v, label);
+            Lay::Task => task_row(ui, label, |ui| {
+                let r = ui.checkbox(v, "");
                 widgets::reg(format!("check:{label}"), r.rect);
                 let r = if tip.is_empty() { r } else { r.on_hover_text(tip) };
                 r.changed()
-            }
+            }),
         }
     }
 
@@ -247,6 +247,10 @@ impl App {
 
     /// Centered dialog buttons; returns (left clicked, right clicked).
     fn task_buttons(&mut self, ui: &mut egui::Ui, left: (&str, &str), right: Option<(&str, &str)>) -> (bool, bool) {
+        self.task_buttons_ex(ui, left, right, true)
+    }
+
+    fn task_buttons_ex(&mut self, ui: &mut egui::Ui, left: (&str, &str), right: Option<(&str, &str)>, right_enabled: bool) -> (bool, bool) {
         let mut out = (false, false);
         let bw = 118.0;
         let total = if right.is_some() { bw * 2.0 + 8.0 } else { bw };
@@ -254,7 +258,7 @@ impl App {
             ui.add_space(((ui.available_width() - total) * 0.5).max(0.0));
             out.0 = widgets::push_button(ui, left.0, left.1, bw, right.is_none()).clicked();
             if let Some((id, text)) = right {
-                out.1 = widgets::push_button(ui, id, text, bw, true).clicked();
+                out.1 = widgets::push_button_enabled(ui, id, text, bw, true, right_enabled).clicked();
             }
         });
         ui.add_space(8.0);
@@ -279,7 +283,8 @@ impl App {
     }
 
     fn attachment_task(&mut self, ui: &mut egui::Ui) {
-        let (cancel, ok) = self.task_buttons(ui, ("task:cancel", "Cancel"), Some(("task:ok", "OK")));
+        let ok_enabled = self.plane_choice.is_some();
+        let (cancel, ok) = self.task_buttons_ex(ui, ("task:cancel", "Cancel"), Some(("task:ok", "OK")), ok_enabled);
         let first = self.planes_at.unwrap_or(usize::MAX);
         let hovered_plane = self.hovered.as_ref().filter(|h| h.object >= first).map(|h| h.object - first);
         let mut accept = None;
@@ -295,7 +300,9 @@ impl App {
                     widgets::reg(format!("plane:{}", &p.name[..2]), rect);
                     let fill = if sel { theme::SELECTION } else if resp.hovered() || hovered_plane == Some(i) { theme::HOVER_ROW } else { Color32::TRANSPARENT };
                     ui.painter().rect_filled(rect, 2.0, fill);
-                    crate::icons::paint(ui.painter(), "Std_Plane", egui::Rect::from_center_size(egui::pos2(rect.left() + 13.0, rect.center().y), egui::vec2(16.0, 16.0)), Color32::WHITE);
+                    let c = crate::plane_picker::plane_color(i);
+                    let sw = egui::Rect::from_center_size(egui::pos2(rect.left() + 13.0, rect.center().y), egui::vec2(12.0, 12.0));
+                    ui.painter().rect(sw, 2.0, Color32::from_rgba_unmultiplied((c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8, 150), egui::Stroke::new(1.0, Color32::from_rgb((c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8)), egui::StrokeKind::Inside);
                     ui.painter().text(egui::pos2(rect.left() + 28.0, rect.center().y), egui::Align2::LEFT_CENTER, &label, egui::FontId::proportional(13.0), theme::TEXT);
                     let resp = resp.on_hover_text(p.hint);
                     if resp.hovered() {

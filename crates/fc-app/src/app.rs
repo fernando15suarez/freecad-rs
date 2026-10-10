@@ -558,9 +558,18 @@ impl App {
     fn draw_plane_labels(&self, ui: &egui::Ui, ctx: &egui::Context) {
         let half = crate::plane_picker::plane_half_size(self.doc.result().map(|s| s.bbox()));
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("plane_labels"))).with_clip_rect(ui.clip_rect());
-        for p in crate::plane_picker::planes() {
+        for (i, p) in crate::plane_picker::planes().into_iter().enumerate() {
             if let Some(pos) = self.vp.world_to_screen(p.placement.to_world(half, half)) {
-                painter.text(pos + egui::vec2(4.0, -4.0), egui::Align2::LEFT_BOTTOM, p.name, egui::FontId::proportional(13.0), egui::Color32::from_rgb(215, 220, 255));
+                let c = crate::plane_picker::plane_color(i);
+                let col = egui::Color32::from_rgb((110.0 + c[0] * 145.0) as u8, (110.0 + c[1] * 145.0) as u8, (110.0 + c[2] * 145.0) as u8);
+                // leader line from the plane's corner to its label
+                let end = pos + egui::vec2(18.0, -16.0);
+                painter.line_segment([pos, end], egui::Stroke::new(1.0, col));
+                painter.circle_filled(pos, 2.5, col);
+                let g = painter.layout_no_wrap(p.name.to_string(), egui::FontId::proportional(13.0), col);
+                let r = egui::Rect::from_min_size(end + egui::vec2(2.0, -g.size().y * 0.5 - 2.0), g.size() + egui::vec2(8.0, 4.0));
+                painter.rect_filled(r, 3.0, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 200));
+                painter.galley(r.min + egui::vec2(4.0, 2.0), g, col);
             }
         }
     }
@@ -939,10 +948,10 @@ impl App {
         let id = ui.id().with(("field", &canon));
         let initial = format!("{} {unit}", fmt_num(value)).trim().to_string();
         let buf = self.fields.entry(canon.clone()).or_insert_with(|| initial.clone());
-        let (fx_w, spin_w) = (22.0, 12.0);
+        let (fx_w, spin_w) = (22.0, 16.0);
         let mut te = egui::TextEdit::singleline(buf).id(id).desired_width((width - fx_w - spin_w - 8.0).max(40.0)).margin(egui::Margin::symmetric(5, 2));
-        if bound.is_some() {
-            te = te.text_color(egui::Color32::from_rgb(120, 175, 255));
+        if locked {
+            te = te.text_color(crate::theme::TEXT_DIM);
         }
         let resp = ui.add_enabled(!locked, te);
         widgets::reg(format!("field:{canon}"), resp.rect);
@@ -1006,7 +1015,10 @@ impl App {
             let resp = ui.interact(half, id.with(up), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
             let c = half.center();
             let col = if !enabled { egui::Color32::from_gray(80) } else if resp.hovered() { egui::Color32::WHITE } else { egui::Color32::from_gray(160) };
-            let pts = if up { vec![c + egui::vec2(-3.5, 2.0), c + egui::vec2(3.5, 2.0), c + egui::vec2(0.0, -2.5)] } else { vec![c + egui::vec2(-3.5, -2.0), c + egui::vec2(3.5, -2.0), c + egui::vec2(0.0, 2.5)] };
+            if resp.hovered() && enabled {
+                ui.painter().rect_filled(half.shrink(0.5), 2.0, crate::theme::BUTTON_HOVER);
+            }
+            let pts = if up { vec![c + egui::vec2(-4.0, 2.0), c + egui::vec2(4.0, 2.0), c + egui::vec2(0.0, -2.5)] } else { vec![c + egui::vec2(-4.0, -2.0), c + egui::vec2(4.0, -2.0), c + egui::vec2(0.0, 2.5)] };
             ui.painter().add(egui::Shape::convex_polygon(pts, col, egui::Stroke::NONE));
             if resp.clicked() {
                 let step = if fine { 0.1 } else { 1.0 };

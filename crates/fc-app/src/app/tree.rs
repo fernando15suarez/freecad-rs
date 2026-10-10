@@ -23,6 +23,8 @@ struct RowSpec<'a> {
     expander: Option<bool>,
     /// Some(visible) when the row has a visibility eye.
     eye: Option<bool>,
+    /// Keep the eye column even without an eye (aligns sibling rows).
+    eye_space: bool,
     icon: &'a str,
     badge: Option<&'a str>,
     label: RichText,
@@ -39,7 +41,7 @@ fn tree_row(ui: &mut egui::Ui, s: RowSpec, menu: Option<&mut dyn FnMut(&mut egui
     let p = ui.painter();
     let x0 = rect.left() + 4.0 + s.depth as f32 * INDENT;
     let y = rect.center().y;
-    let label_x = x0 + 14.0 + if s.eye.is_some() { 18.0 } else { 0.0 } + 20.0;
+    let label_x = x0 + 14.0 + if s.eye.is_some() || s.eye_space { 20.0 } else { 0.0 } + 20.0;
     let galley = egui::WidgetText::from(s.label.clone()).into_galley(ui, Some(egui::TextWrapMode::Truncate), (rect.right() - label_x - 4.0).max(10.0), egui::TextStyle::Body);
     let label_w = galley.size().x;
     // FreeCAD highlights the label region of the selected item
@@ -63,12 +65,14 @@ fn tree_row(ui: &mut egui::Ui, s: RowSpec, menu: Option<&mut dyn FnMut(&mut egui
     }
     let mut x = x0 + 14.0;
     if let Some(vis) = s.eye {
-        let er = Rect::from_center_size(Pos2::new(x + 8.0, y), Vec2::splat(16.0));
+        let er = Rect::from_center_size(Pos2::new(x + 9.0, y), Vec2::splat(16.0));
         let eresp = ui.interact(er, ui.id().with((&s.reg, "eye")), Sense::click());
         widgets::reg(format!("{}:eye", s.reg), er);
         crate::icons::paint(ui.painter(), if vis { "TreeItemVisible" } else { "TreeItemInvisible" }, er, if eresp.hovered() { Color32::WHITE } else { Color32::from_gray(215) });
-        out.eye = eresp.on_hover_text(if vis { "Hide (Space)" } else { "Show (Space)" }).clicked();
-        x += 18.0;
+        out.eye = eresp.on_hover_text(if vis { "Hide" } else { "Show" }).clicked();
+        x += 20.0;
+    } else if s.eye_space {
+        x += 20.0;
     }
     let ir = Rect::from_center_size(Pos2::new(x + 9.0, y), Vec2::splat(16.0));
     crate::icons::paint(ui.painter(), s.icon, ir, Color32::WHITE);
@@ -134,12 +138,12 @@ impl App {
                 match self.props_tab {
                     1 => self.variables(ui),
                     2 => self.measurements(ui),
-                    _ if self.task.is_some() || self.editor.is_some() => {
-                        egui::Frame::new().fill(Color32::from_rgb(34, 44, 58)).inner_margin(egui::Margin::symmetric(8, 5)).show(ui, |ui| {
+                    _ if self.task.is_some() || self.editor.is_some() || self.picking => {
+                        // FreeCAD blanks the property view while a task dialog is open
+                        egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            ui.label(RichText::new("Being edited in the Tasks panel").color(theme::TEXT));
+                            ui.add(egui::Label::new(RichText::new("Properties are edited in the Tasks panel while a task is open.").color(theme::TEXT_DIM)).wrap());
                         });
-                        ui.add_enabled_ui(false, |ui| self.data_tab(ui));
                     }
                     _ => self.data_tab(ui),
                 }
@@ -151,9 +155,9 @@ impl App {
         let interactive = self.editor.is_none() && self.task.is_none() && !self.picking;
         let mut acts: Vec<TreeAct> = vec![];
         let title = self.doc_title();
-        tree_row(ui, RowSpec { reg: "tree:document".into(), depth: 0, expander: Some(true), eye: None, icon: "Document", badge: None, label: RichText::new(title).font(theme::bold_font(13.0)), selected: false, tip: self.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "Not saved yet".into()) }, None);
+        tree_row(ui, RowSpec { reg: "tree:document".into(), depth: 0, expander: Some(true), eye: None, eye_space: false, icon: "Document", badge: None, label: RichText::new(title).font(theme::bold_font(13.0)), selected: false, tip: self.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "Not saved yet".into()) }, None);
         let body_open = is_open(ui, "body", true);
-        let r = tree_row(ui, RowSpec { reg: "tree:Body".into(), depth: 1, expander: Some(body_open), eye: Some(self.body_visible), icon: "PartDesign_Body", badge: None, label: RichText::new("Body"), selected: false, tip: "Body: the solid built by the features below, in order".into() }, None);
+        let r = tree_row(ui, RowSpec { reg: "tree:Body".into(), depth: 1, expander: Some(body_open), eye: Some(self.body_visible), eye_space: true, icon: "PartDesign_Body", badge: None, label: RichText::new("Body"), selected: false, tip: "Body: the solid built by the features below, in order".into() }, None);
         if r.expand {
             toggle_open(ui, "body", true);
         }
@@ -164,7 +168,7 @@ impl App {
             // Origin
             let o_open = is_open(ui, "origin", false);
             let dim = |t: &str, d: bool| if d { RichText::new(t).color(theme::TEXT_DIM) } else { RichText::new(t) };
-            let r = tree_row(ui, RowSpec { reg: "tree:Origin".into(), depth: 2, expander: Some(o_open), eye: Some(self.show_origin), icon: "Std_CoordinateSystem", badge: None, label: dim("Origin", !self.show_origin), selected: false, tip: "The body's origin: base planes and axes".into() }, None);
+            let r = tree_row(ui, RowSpec { reg: "tree:Origin".into(), depth: 2, expander: Some(o_open), eye: Some(self.show_origin), eye_space: true, icon: "Std_CoordinateSystem", badge: None, label: dim("Origin", !self.show_origin), selected: false, tip: "The body's origin: base planes and axes".into() }, None);
             if r.expand || (r.clicked && interactive) {
                 toggle_open(ui, "origin", false);
             }
@@ -174,7 +178,7 @@ impl App {
             if o_open {
                 for (i, (name, icon)) in ORIGIN_ITEMS.iter().enumerate() {
                     let tip = if i >= 3 { "Select, then New Sketch to sketch on this plane" } else { "Select, then Revolution/Groove to revolve about this axis" };
-                    let r = tree_row(ui, RowSpec { reg: format!("tree:{name}"), depth: 3, expander: None, eye: None, icon, badge: None, label: dim(name, !self.show_origin), selected: self.origin_sel == Some(i), tip: tip.into() }, None);
+                    let r = tree_row(ui, RowSpec { reg: format!("tree:{name}"), depth: 3, expander: None, eye: None, eye_space: true, icon, badge: None, label: dim(name, !self.show_origin), selected: self.origin_sel == Some(i), tip: tip.into() }, None);
                     if r.clicked && interactive {
                         acts.push(TreeAct::Origin(i));
                     }
@@ -280,7 +284,10 @@ impl App {
         let Some(f) = self.doc.get(id) else { return RowOut::default() };
         let st = self.doc.state(id);
         let solid = f.kind.is_solid_feature();
-        let visible = if solid { self.body_visible && tip_solid == Some(id) } else { !consumed.contains(&id) && !self.hidden_sketches.contains(&id) };
+        // the body shows its tip's result; other solid features have no visibility of their own
+        let is_tip = tip_solid == Some(id);
+        let visible = if solid { !is_tip || self.body_visible } else { !consumed.contains(&id) && !self.hidden_sketches.contains(&id) };
+        let eye = if solid { if is_tip { Some(self.body_visible) } else { None } } else { Some(visible) };
         let err = st.and_then(|s| s.error.as_ref()).map(|e| e.to_string());
         let warn = st.and_then(|s| s.warning.clone());
         let dof = st.and_then(|s| s.solve.as_ref()).map(|r| r.dof).unwrap_or(0);
@@ -319,7 +326,7 @@ impl App {
             tip.push_str("\nTip: the body ends here");
         }
         tip.push_str("\nDouble-click to edit · right-click for more");
-        let is_tip = self.doc.tip == Some(id);
+        let explicit_tip = self.doc.tip == Some(id);
         let suppressed = f.suppressed;
         let mut menu_acts: Vec<TreeAct> = vec![];
         let mut menu = |ui: &mut egui::Ui| {
@@ -333,7 +340,7 @@ impl App {
                 menu_acts.push(TreeAct::ToggleSketch(id));
                 ui.close();
             }
-            if solid && item(ui, "PartDesign_MoveTip", if is_tip { "Unset tip" } else { "Set tip" }, interactive) {
+            if solid && item(ui, "PartDesign_MoveTip", if explicit_tip { "Unset tip" } else { "Set tip" }, interactive) {
                 menu_acts.push(TreeAct::Tip(id));
                 ui.close();
             }
@@ -349,13 +356,13 @@ impl App {
         };
         let r = tree_row(
             ui,
-            RowSpec { reg: format!("tree:{}", f.name), depth, expander, eye: Some(visible), icon, badge, label, selected: self.tree_sel.contains(&id), tip },
+            RowSpec { reg: format!("tree:{}", f.name), depth, expander, eye, eye_space: true, icon, badge, label, selected: self.tree_sel.contains(&id), tip },
             Some(&mut menu),
         );
         acts.extend(menu_acts);
         if r.eye && !solid && !consumed.contains(&id) {
             acts.push(TreeAct::ToggleSketch(id));
-        } else if r.eye && solid && tip_solid == Some(id) {
+        } else if r.eye && solid && is_tip {
             acts.push(TreeAct::ToggleBody);
         }
         if interactive {

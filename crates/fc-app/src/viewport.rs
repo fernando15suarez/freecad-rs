@@ -193,7 +193,7 @@ impl Viewport {
                     let mut edge_verts = vec![];
                     for e in &o.edges {
                         for w in e.points.windows(2) {
-                            gpu::push_segment(&mut edge_verts, w[0], w[1], if o.color[3] < 0.999 { [0.62, 0.66, 0.95, 0.9] } else { EDGE_COLOR }, EDGE_WIDTH);
+                            gpu::push_segment(&mut edge_verts, w[0], w[1], if o.color[3] < 0.999 { [o.color[0], o.color[1], o.color[2], 0.95] } else { EDGE_COLOR }, EDGE_WIDTH);
                         }
                     }
                     ObjUpload { verts, indices: o.mesh.indices.clone(), edge_verts }

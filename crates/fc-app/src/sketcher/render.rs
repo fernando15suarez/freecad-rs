@@ -80,68 +80,55 @@ pub fn arrow(p: &Painter, tip: Pos2, dir: V, col: C) {
     p.add(Shape::convex_polygon(vec![tip, tip - d * 10.0 + n * 3.5, tip - d * 10.0 - n * 3.5], col, Stroke::NONE));
 }
 
-/// Text centered at `c`, optional background; returns its rect.
+thread_local! {
+    /// Dimension labels are drawn last (over axes and other dimension lines) on a chip.
+    static LABELS: std::cell::RefCell<Vec<(Rect, std::sync::Arc<egui::Galley>, C, Option<C>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Text centered at `c`, optional background; returns its rect. Painted by `flush_labels`.
 fn label(p: &Painter, c: Pos2, text: &str, col: C, bg: Option<C>) -> Rect {
     let g = p.layout_no_wrap(text.to_string(), FontId::proportional(DIM_FONT), col);
     let r = Rect::from_center_size(c, g.size());
-    // FreeCAD breaks the dimension line around its text: blank it with the view background
-    let b = bg.unwrap_or(C::from_rgb(31, 31, 31));
-    p.rect_filled(r.expand2(egui::vec2(4.0, 1.0)), 3.0, b);
-    p.galley(r.min, g, col);
+    LABELS.with(|l| l.borrow_mut().push((r, g, col, bg)));
     r
 }
 
-/// Constraint badge: rounded square filled with `fill`, white symbol.
-pub fn badge(p: &Painter, c: Pos2, g: Glyph, fill: C, ring: Option<C>) -> Rect {
-    let r = Rect::from_center_size(c, egui::vec2(15.0, 15.0));
-    if let Some(rc) = ring {
-        // conflicting / redundant: glowing halo + white border
-        p.rect_filled(r.expand(6.0), 8.0, C::from_rgba_unmultiplied(rc.r(), rc.g(), rc.b(), 90));
-        p.rect_filled(r, 3.5, fill);
-        p.rect_stroke(r, 3.5, Stroke::new(1.5, C::WHITE), egui::StrokeKind::Outside);
-    } else {
-        p.rect_filled(r, 3.5, fill);
-    }
-    let w = Stroke::new(1.6, C::WHITE);
-    let o = |x: f32, y: f32| c + egui::vec2(x, y);
+/// Paint the queued dimension labels on opaque chips (FreeCAD breaks the line at its text).
+fn flush_labels(p: &Painter) {
+    LABELS.with(|l| {
+        for (r, g, col, bg) in l.borrow_mut().drain(..) {
+            let chip = r.expand2(egui::vec2(5.0, 1.5));
+            p.rect(chip, 3.0, bg.unwrap_or(C::from_rgba_unmultiplied(24, 24, 24, 235)), Stroke::new(1.0, col.gamma_multiply(0.35)), egui::StrokeKind::Inside);
+            p.galley(r.min, g, col);
+        }
+    });
+}
+
+fn glyph_icon(g: Glyph) -> &'static str {
     match g {
-        Glyph::H | Glyph::V => {
-            p.text(c + egui::vec2(0.0, 0.5), Align2::CENTER_CENTER, if g == Glyph::H { "H" } else { "V" }, FontId::proportional(10.5), C::WHITE);
-        }
-        Glyph::Parallel => {
-            p.line_segment([o(-4.0, 5.0), o(0.0, -5.0)], w);
-            p.line_segment([o(0.5, 5.0), o(4.5, -5.0)], w);
-        }
-        Glyph::Perpendicular => {
-            p.line_segment([o(0.0, -5.5), o(0.0, 4.5)], w);
-            p.line_segment([o(-5.5, 4.5), o(5.5, 4.5)], w);
-        }
-        Glyph::Tangent => {
-            p.circle_stroke(o(0.0, -1.5), 3.8, w);
-            p.line_segment([o(-6.0, 2.3), o(6.0, 2.3)], w);
-        }
-        Glyph::Equal => {
-            p.line_segment([o(-5.0, -2.2), o(5.0, -2.2)], w);
-            p.line_segment([o(-5.0, 2.2), o(5.0, 2.2)], w);
-        }
-        Glyph::PointOn => {
-            p.line_segment([o(-6.0, 4.0), o(6.0, -4.0)], w);
-            p.circle_filled(o(0.0, 0.0), 2.6, C::WHITE);
-        }
-        Glyph::Symmetric => {
-            p.line_segment([o(0.0, -6.0), o(0.0, 6.0)], Stroke::new(1.2, C::WHITE));
-            p.add(Shape::convex_polygon(vec![o(-6.5, -3.5), o(-2.0, 0.0), o(-6.5, 3.5)], C::WHITE, Stroke::NONE));
-            p.add(Shape::convex_polygon(vec![o(6.5, -3.5), o(6.5, 3.5), o(2.0, 0.0)], C::WHITE, Stroke::NONE));
-        }
-        Glyph::Block => {
-            p.rect_filled(Rect::from_min_max(o(-4.5, -0.5), o(4.5, 5.5)), 1.0, C::WHITE);
-            p.add(Shape::line(vec![o(-2.8, -0.5), o(-2.8, -3.5), o(-1.5, -5.2), o(1.5, -5.2), o(2.8, -3.5), o(2.8, -0.5)], w));
-        }
-        Glyph::Coincident => {
-            p.circle_stroke(c, 4.5, w);
-            p.circle_filled(c, 2.0, C::WHITE);
-        }
+        Glyph::H => "Constraint_Horizontal",
+        Glyph::V => "Constraint_Vertical",
+        Glyph::Parallel => "Constraint_Parallel",
+        Glyph::Perpendicular => "Constraint_Perpendicular",
+        Glyph::Tangent => "Constraint_Tangent",
+        Glyph::Equal => "Constraint_EqualLength",
+        Glyph::PointOn => "Constraint_PointOnObject",
+        Glyph::Symmetric => "Constraint_Symmetric",
+        Glyph::Block => "Constraint_Block",
+        Glyph::Coincident => "Constraint_PointOnPoint",
     }
+}
+
+/// Constraint badge: FreeCAD's constraint icon on a dark chip whose border shows the state
+/// (`fill`: normal red, hover yellow, selected green); `ring` marks conflicts/redundancy.
+pub fn badge(p: &Painter, c: Pos2, g: Glyph, fill: C, ring: Option<C>) -> Rect {
+    let r = Rect::from_center_size(c, egui::vec2(20.0, 20.0));
+    if let Some(rc) = ring {
+        p.rect_filled(r.expand(5.0), 7.0, C::from_rgba_unmultiplied(rc.r(), rc.g(), rc.b(), 90));
+    }
+    let normal = fill == COL_DIM;
+    p.rect(r, 4.0, if normal { C::from_rgba_unmultiplied(30, 30, 30, 235) } else { C::from_rgba_unmultiplied(fill.r() / 4, fill.g() / 4, fill.b() / 4, 240) }, Stroke::new(if normal { 1.0 } else { 2.0 }, if normal { C::from_rgb(110, 50, 50) } else { fill }), egui::StrokeKind::Inside);
+    crate::icons::paint(p, glyph_icon(g), r.shrink(2.0), C::WHITE);
     r
 }
 
@@ -353,7 +340,7 @@ impl SketchEditor {
             } else if self.is_sel(Sel::Edge(g)) {
                 (COL_SEL, 3.0)
             } else {
-                (col, 1.5)
+                (col.gamma_multiply(0.55), 1.5)
             };
             p.line_segment([o - u * 6000.0, o + u * 6000.0], Stroke::new(w, c));
         }
@@ -442,6 +429,8 @@ impl SketchEditor {
             let r = if hl.is_some() { 5.0 } else { 3.5 };
             p.circle(s, r, hl.unwrap_or(base), Stroke::new(1.0, C::from_black_alpha(140)));
         }
+
+        flush_labels(p);
 
         // tool preview, snap hint, cursor text
         self.render_tool(doc, pj, p);

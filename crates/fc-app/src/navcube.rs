@@ -100,10 +100,10 @@ fn up_for(n: DVec3, cur_up: DVec3) -> DVec3 {
 /// Draw the cube for a camera with basis (right, up, fwd) into the top-right of `view`.
 /// Returns the requested navigation, if any.
 pub fn ui(ui: &mut egui::Ui, view: Rect, right: DVec3, up: DVec3, fwd: DVec3) -> Option<NavAction> {
-    let size = 128.0;
+    let size = 140.0;
     let area = Rect::from_min_size(Pos2::new(view.right() - size - 6.0, view.top() + 6.0), Vec2::splat(size));
     let center = area.center();
-    let s = 30.0f32; // pixels per cube unit
+    let s = 34.0f32; // pixels per cube unit
     let proj = |p: DVec3| center + Vec2::new(p.dot(right) as f32, -p.dot(up) as f32) * s;
     let resp = ui.interact(area, ui.id().with("navcube"), Sense::click_and_drag());
     widgets::reg("navcube", area);
@@ -126,7 +126,7 @@ pub fn ui(ui: &mut egui::Ui, view: Rect, right: DVec3, up: DVec3, fwd: DVec3) ->
         if hover_face == Some(i) {
             col = Color32::from_rgb(64, 150, 235);
         }
-        painter.add(Shape::convex_polygon(poly.clone(), col, Stroke::new(1.0, Color32::from_rgb(70, 74, 80))));
+        painter.add(Shape::convex_polygon(poly.clone(), col, Stroke::new(1.2, Color32::from_rgb(58, 62, 68))));
         if let Some((label, text_up)) = f.label {
             if facing > 0.12 {
                 let tc = if hover_face == Some(i) { Color32::WHITE } else { Color32::from_rgb(35, 38, 45) };
@@ -197,7 +197,7 @@ pub fn ui(ui: &mut egui::Ui, view: Rect, right: DVec3, up: DVec3, fwd: DVec3) ->
 
 /// Lay out `text`, tessellate it, and map the mesh onto the cube face so it skews with it.
 fn face_text(ui: &egui::Ui, painter: &egui::Painter, text: &str, n: DVec3, text_up: DVec3, proj: &dyn Fn(DVec3) -> Pos2, color: Color32) {
-    let font = crate::theme::bold_font(15.0);
+    let font = crate::theme::bold_font(18.0);
     let galley = painter.layout_no_wrap(text.to_string(), font, color);
     let gs = galley.size();
     let ppp = ui.ctx().pixels_per_point();

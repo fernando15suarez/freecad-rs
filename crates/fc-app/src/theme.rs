@@ -28,7 +28,7 @@ pub const WARNING: Color32 = Color32::from_rgb(235, 175, 50);
 pub const VIEW_BG: [f32; 3] = [31.0 / 255.0, 31.0 / 255.0, 31.0 / 255.0];
 
 pub const FONT_SIZE: f32 = 13.0;
-pub const ROW_H: f32 = 22.0;
+pub const ROW_H: f32 = 24.0;
 
 pub fn bold() -> FontFamily {
     FontFamily::Name("bold".into())

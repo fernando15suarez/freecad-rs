@@ -47,7 +47,7 @@ pub fn texture_ex(ctx: &egui::Context, name: &str, size: f32, disabled: bool) ->
                             // un-premultiply, gray it out, lighten, then fade
                             let un = |v: u8| if a == 0 { 0.0 } else { v as f32 * 255.0 / a as f32 };
                             let l = (un(r) * 0.3 + un(g) * 0.6 + un(b) * 0.1) * 0.45 + 70.0;
-                            let na = a as f32 * 0.55;
+                            let na = a as f32 * 0.42;
                             let v = (l.min(255.0) * na / 255.0) as u8;
                             *p = Color32::from_rgba_premultiplied(v, v, v, na as u8);
                         }

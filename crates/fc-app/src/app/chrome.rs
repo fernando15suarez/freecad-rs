@@ -134,10 +134,10 @@ impl App {
         let two_sketches = idle;
         let k = |s: &str| cmd_key(s);
         match a {
-            Act::New => ("document-new", "New", "Creates a new empty document", k("Ctrl+N"), self.editor.is_none() && self.task.is_none()),
-            Act::Open => ("document-open", "Open...", "Opens a freecad-rs document or imports a FreeCAD .FCStd file", k("Ctrl+O"), self.editor.is_none() && self.task.is_none()),
-            Act::Save => ("document-save", "Save", "Saves the active document", k("Ctrl+S"), !self.picking),
-            Act::SaveAs => ("document-save-as", "Save As...", "Saves the active document under a new file name", k("Ctrl+Shift+S"), !self.picking),
+            Act::New => ("document-new", "New", "Creates a new empty document", k("Ctrl+N"), idle),
+            Act::Open => ("document-open", "Open...", "Opens a freecad-rs document or imports a FreeCAD .FCStd file", k("Ctrl+O"), idle),
+            Act::Save => ("document-save", "Save", "Saves the active document", k("Ctrl+S"), idle),
+            Act::SaveAs => ("document-save-as", "Save As...", "Saves the active document under a new file name", k("Ctrl+Shift+S"), idle),
             Act::ExportStep => ("Std_Export", "Export STEP...", "Exports the body as a STEP file", String::new(), idle && self.doc.result().is_some()),
             Act::ExportStl => ("Std_Export", "Export STL...", "Exports the body as an STL mesh", String::new(), idle && self.doc.result().is_some()),
             Act::Undo => ("edit-undo", "Undo", "Undoes the last change", k("Ctrl+Z"), self.can_undo()),
@@ -271,7 +271,7 @@ impl App {
 
     pub(super) fn toolbars(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().item_spacing = egui::vec2(1.0, 0.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             tb_grip(ui);
             self.tb(ui, "new", Act::New, false);
             self.tb(ui, "open", Act::Open, false);
@@ -288,14 +288,37 @@ impl App {
             tb_separator(ui);
             tb_grip(ui);
             self.tb(ui, "fit", Act::FitAll, false);
-            for v in VIEWS {
+            // standard views: isometric with a dropdown of all views, then the common three
+            let mem = egui::Id::new("std_view_choice");
+            let cur = ui.data(|d| d.get_temp::<usize>(mem)).unwrap_or(0).min(VIEWS.len() - 1);
+            let variants: Vec<Action> = VIEWS.iter().map(|v| Action::new(v.2, v.1, v.2, v.3, v.4)).collect();
+            let main = VIEWS[cur];
+            let id = format!("view:{:?}", main.0).to_lowercase();
+            let (clicked, chosen) = crate::widgets::split_tool_button(ui, &Action::new(&id, main.1, main.2, main.3, main.4), &variants);
+            if let Some(i) = chosen {
+                ui.data_mut(|d| d.insert_temp(mem, i));
+                self.run(Act::View(VIEWS[i].0));
+            } else if clicked {
+                self.run(Act::View(main.0));
+            }
+            for v in &VIEWS[1..4] {
                 let id = format!("view:{:?}", v.0).to_lowercase();
                 self.tb(ui, &id, Act::View(v.0), false);
             }
             tb_separator(ui);
+            // projection: one button showing the current one, dropdown to switch
             let persp = self.vp.perspective();
-            self.tb(ui, "ortho", Act::Ortho, !persp);
-            self.tb(ui, "persp", Act::Persp, persp);
+            let (oi, ot, od, ok, _) = self.act_info(Act::Ortho);
+            let (pi, pt, pd, pk, _) = self.act_info(Act::Persp);
+            let variants = [Action::new("ortho", oi, ot, od, &ok).checked(!persp), Action::new("persp", pi, pt, pd, &pk).checked(persp)];
+            let main = if persp { Action::new("projection", pi, "Perspective view (click for orthographic)", pd, &pk) } else { Action::new("projection", oi, "Orthographic view (click for perspective)", od, &ok) };
+            let (clicked, chosen) = crate::widgets::split_tool_button(ui, &main, &variants);
+            match (clicked, chosen) {
+                (_, Some(0)) => self.run(Act::Ortho),
+                (_, Some(_)) => self.run(Act::Persp),
+                (true, None) => self.run(if persp { Act::Ortho } else { Act::Persp }),
+                _ => {}
+            }
             tb_separator(ui);
             self.tb(ui, "origin", Act::ToggleOrigin, self.show_origin);
             // export dropdown
@@ -308,7 +331,7 @@ impl App {
             });
         });
         ui.add_space(2.0);
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if self.editor.is_some() {
                 tb_grip(ui);
                 self.tb(ui, "leave", Act::LeaveSketch, false);
@@ -361,15 +384,26 @@ impl App {
             let (w, h) = self.vp.view_size();
             let right = format!("{} mm x {} mm", fmt2(w), fmt2(h));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(right).color(theme::TEXT)).on_hover_text("Size of the visible area of the 3D view");
-                ui.add(egui::Separator::default().vertical().spacing(16.0));
-                ui.label(RichText::new("mm").color(theme::TEXT)).on_hover_text("Unit system: Standard (mm, kg, s, degree)");
-                ui.add(egui::Separator::default().vertical().spacing(16.0));
-                ui.label(RichText::new("CAD").color(theme::TEXT)).on_hover_text(
-                    "Navigation style: CAD\n• Left click: select\n• Left or right drag: rotate (Shift + drag: pan)\n• Middle drag: pan\n• Wheel / pinch: zoom at the cursor\n• Two-finger scroll: rotate (Shift: pan)\n• Sketch: right drag rotates, middle drag pans",
-                );
-                ui.add(crate::icons::image(ui.ctx(), "view-rotate-right", 14.0));
-                ui.add(egui::Separator::default().vertical().spacing(16.0));
+                // fixed-width segments, like Qt's status bar widgets
+                let seg = |ui: &mut egui::Ui, w: f32, add: &mut dyn FnMut(&mut egui::Ui)| {
+                    ui.allocate_ui_with_layout(egui::vec2(w, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.set_min_width(w);
+                        add(ui)
+                    });
+                    ui.add(egui::Separator::default().vertical().spacing(12.0));
+                };
+                seg(ui, 170.0, &mut |ui| {
+                    ui.label(RichText::new(&right).color(theme::TEXT)).on_hover_text("Size of the visible area of the 3D view");
+                });
+                seg(ui, 34.0, &mut |ui| {
+                    ui.label(RichText::new("mm").color(theme::TEXT)).on_hover_text("Unit system: Standard (mm, kg, s, degree)");
+                });
+                seg(ui, 64.0, &mut |ui| {
+                    ui.add(crate::icons::image(ui.ctx(), "view-rotate-right", 14.0));
+                    ui.label(RichText::new("CAD").color(theme::TEXT)).on_hover_text(
+                        "Navigation style: CAD\n• Left click: select\n• Left or right drag: rotate (Shift + drag: pan)\n• Middle drag: pan\n• Wheel / pinch: zoom at the cursor\n• Two-finger scroll: rotate (Shift: pan)\n• Sketch: right drag rotates, middle drag pans",
+                    );
+                });
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     let text = if let Some(ed) = &self.editor {
                         ed.status().to_string()
@@ -409,8 +443,8 @@ impl App {
                     Key::Z if mods.shift => self.redo(),
                     Key::Z => self.undo(),
                     Key::Y => self.redo(),
-                    Key::S if mods.shift => self.run(Act::SaveAs),
-                    Key::S => self.run(Act::Save),
+                    Key::S if mods.shift && self.idle() => self.run(Act::SaveAs),
+                    Key::S if self.idle() => self.run(Act::Save),
                     Key::N if self.idle() => self.run(Act::New),
                     Key::O if self.idle() => self.run(Act::Open),
                     _ => {}

@@ -42,8 +42,8 @@ pub fn tooltip(ui: &mut egui::Ui, title: &str, desc: &str, shortcut: &str) {
 
 // --------------------------------------------------------------------- toolbar
 
-pub const TB_ICON: f32 = 24.0;
-pub const TB_BUTTON: f32 = 32.0;
+pub const TB_ICON: f32 = 25.0;
+pub const TB_BUTTON: f32 = 33.0;
 
 pub struct Action<'a> {
     pub id: &'a str,
@@ -141,21 +141,27 @@ pub fn tb_grip(ui: &mut egui::Ui) {
 
 // ------------------------------------------------------------------- dock title
 
-/// Centered dock title ("Model", "Tasks") like a Qt dock widget.
+/// Dock title ("Model", "Tasks") like a Qt dock widget title bar.
 pub fn dock_title(ui: &mut egui::Ui, title: &str) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), Sense::hover());
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, title, egui::FontId::proportional(14.0), theme::TEXT);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 26.0), Sense::hover());
+    ui.painter().text(Pos2::new(rect.left() + 8.0, rect.center().y), Align2::LEFT_CENTER, title, theme::bold_font(13.0), theme::TEXT);
+    ui.painter().line_segment([Pos2::new(rect.left() + 4.0, rect.bottom() - 1.0), Pos2::new(rect.right() - 4.0, rect.bottom() - 1.0)], Stroke::new(1.0, theme::GRID_LINE));
+    ui.add_space(4.0);
 }
 
 // ---------------------------------------------------------------------- buttons
 
 /// A push button of a fixed width, optionally the default ("OK") one.
 pub fn push_button(ui: &mut egui::Ui, id: &str, text: &str, width: f32, default: bool) -> egui::Response {
+    push_button_enabled(ui, id, text, width, default, true)
+}
+
+pub fn push_button_enabled(ui: &mut egui::Ui, id: &str, text: &str, width: f32, default: bool, enabled: bool) -> egui::Response {
     let mut b = egui::Button::new(RichText::new(text).size(14.0)).min_size(egui::vec2(width, 26.0)).corner_radius(4.0);
     if default {
         b = b.fill(theme::OK_BUTTON).stroke(Stroke::new(1.0, Color32::from_rgb(70, 130, 200)));
     }
-    let r = ui.add(b);
+    let r = ui.add_enabled(enabled, b);
     reg(id.to_string(), r.rect);
     r
 }
@@ -305,8 +311,7 @@ pub fn ro_value(ui: &mut egui::Ui, text: &str) {
 
 /// Bool property: checkbox + Yes/No like FreeCAD.
 pub fn yes_no(ui: &mut egui::Ui, v: &mut bool) -> bool {
-    let text = if *v { "Yes" } else { "No" };
-    ui.checkbox(v, text).changed()
+    ui.checkbox(v, "").on_hover_text(if *v { "Yes" } else { "No" }).changed()
 }
 
 /// A dropdown whose options register as `opt:<id>:<label>` for the input script.
@@ -339,10 +344,15 @@ pub fn tab_bar(ui: &mut egui::Ui, tabs: &[&str], current: usize) -> Option<usize
             let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 24.0), Sense::click());
             reg(format!("tab:{t}"), rect);
             let sel = i == current;
-            let fill = if sel { Color32::from_rgb(45, 45, 45) } else if resp.hovered() { Color32::from_rgb(35, 35, 35) } else { theme::PANEL };
-            ui.painter().rect_filled(rect, CornerRadius { nw: 0, ne: 0, sw: 4, se: 4 }, fill);
+            let fill = if sel { Color32::from_rgb(48, 48, 48) } else if resp.hovered() { Color32::from_rgb(36, 36, 36) } else { theme::PANEL };
+            let cr = CornerRadius { nw: 0, ne: 0, sw: 4, se: 4 };
+            ui.painter().rect_filled(rect, cr, fill);
+            if sel {
+                ui.painter().rect_stroke(rect, cr, Stroke::new(1.0, theme::BORDER), egui::StrokeKind::Inside);
+                ui.painter().line_segment([rect.left_bottom() + egui::vec2(4.0, -1.0), rect.right_bottom() + egui::vec2(-4.0, -1.0)], Stroke::new(2.0, theme::ACCENT));
+            }
             let font = if sel { theme::bold_font(13.0) } else { egui::FontId::proportional(13.0) };
-            ui.painter().text(rect.center(), Align2::CENTER_CENTER, *t, font, if sel { Color32::WHITE } else { theme::TEXT });
+            ui.painter().text(rect.center(), Align2::CENTER_CENTER, *t, font, if sel { Color32::WHITE } else { theme::TEXT_DIM });
             if resp.clicked() {
                 out = Some(i);
             }
