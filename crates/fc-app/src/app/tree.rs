@@ -214,7 +214,8 @@ impl App {
                 let solid = self.doc.get(id).is_some_and(|f| f.kind.is_solid_feature());
                 let has_children = solid && !inputs.is_empty();
                 let key = format!("feat{id}");
-                let open = has_children && is_open(ui, &key, false);
+                // a selected (or edited) consumed sketch shows its parent expanded
+                let open = has_children && (is_open(ui, &key, false) || inputs.iter().any(|i| self.tree_sel.contains(i)));
                 let r = self.feature_row(ui, id, 2, if has_children { Some(open) } else { None }, tip_solid, &consumed, interactive, &mut acts);
                 if r.expand {
                     toggle_open(ui, &key, false);
