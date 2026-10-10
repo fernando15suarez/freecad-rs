@@ -13,6 +13,9 @@
 //!   scroll DX DY         scroll wheel
 //!   wait N               idle N frames
 //!   expect dof N | expect editing true|false | expect features N | expect volume V
+//!   demo | saveto PATH | external NAME EXPR   (test helpers: load the demo, save to PATH, and rewrite the open
+//!     file on disk the way Calc Canvas does: parameter NAME = EXPR, marked driven)
+//!   expect measure NAME V | param NAME V | driven NAME | banner true|false | dirty true|false
 //!   shot PATH            save a screenshot
 //!   quit
 
@@ -33,6 +36,7 @@ pub enum Step {
     Wait(u32),
     Expect(String, String),
     Shot(String),
+    Do(String, String),
     Quit,
 }
 
@@ -81,7 +85,8 @@ pub fn parse(src: &str) -> Result<Vec<Step>, String> {
             "type" => Step::Type(line[5..].to_string()),
             "scroll" => Step::Scroll(f(1)? as f32, f(2)? as f32),
             "wait" => Step::Wait(f(1)? as u32),
-            "expect" => Step::Expect(w.get(1).unwrap_or(&"").to_string(), w.get(2).unwrap_or(&"").to_string()),
+            "expect" => Step::Expect(w.get(1).unwrap_or(&"").to_string(), w[2.min(w.len())..].join(" ")),
+            "demo" | "saveto" | "external" => Step::Do(w[0].to_string(), line[w[0].len()..].trim().to_string()),
             "shot" => Step::Shot(w.get(1).unwrap_or(&"").to_string()),
             "quit" => Step::Quit,
             other => return Err(format!("line {}: unknown step '{other}'", ln + 1)),

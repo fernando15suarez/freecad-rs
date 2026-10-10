@@ -5,6 +5,7 @@ use crate::scene;
 use crate::sketcher::{EditorExit, SketchEditor};
 use crate::viewport::{Pick, PickKind, StandardView, Viewport};
 use eframe::egui;
+use fc_part::measure::MeasureSpec;
 use fc_part::params::OnUsers;
 use fc_part::*;
 use std::collections::HashMap;
@@ -23,8 +24,72 @@ enum DeleteWhat {
     Param(String),
 }
 
+/// What the "Add measurement" control will create.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MeasKind {
+    Volume,
+    Area,
+    BBoxX,
+    BBoxY,
+    BBoxZ,
+    Value,
+    FaceArea,
+    FaceDiameter,
+    FaceDistance,
+}
+
+impl MeasKind {
+    const ALL: [MeasKind; 9] = [MeasKind::Volume, MeasKind::Area, MeasKind::BBoxX, MeasKind::BBoxY, MeasKind::BBoxZ, MeasKind::Value, MeasKind::FaceArea, MeasKind::FaceDiameter, MeasKind::FaceDistance];
+    fn label(self) -> &'static str {
+        match self {
+            MeasKind::Volume => "Volume",
+            MeasKind::Area => "Surface area",
+            MeasKind::BBoxX => "Bounding box X",
+            MeasKind::BBoxY => "Bounding box Y",
+            MeasKind::BBoxZ => "Bounding box Z",
+            MeasKind::Value => "Value of...",
+            MeasKind::FaceArea => "Face area (pick 1 face)",
+            MeasKind::FaceDiameter => "Face diameter (pick 1 round face)",
+            MeasKind::FaceDistance => "Distance (pick 2 faces)",
+        }
+    }
+    fn faces_needed(self) -> usize {
+        match self {
+            MeasKind::FaceArea | MeasKind::FaceDiameter => 1,
+            MeasKind::FaceDistance => 2,
+            _ => 0,
+        }
+    }
+}
+
+fn dim_unit(d: fc_part::measure::Dim) -> &'static str {
+    use fc_part::measure::Dim;
+    match d {
+        Dim::Length => "mm",
+        Dim::Area => "mm²",
+        Dim::Volume => "mm³",
+        Dim::Angle => "°",
+        Dim::Number => "",
+    }
+}
+
+/// Modification time and size of the open file: changes when something else rewrites it.
+type FileSig = (std::time::SystemTime, u64);
+
+fn file_sig(p: &std::path::Path) -> Option<FileSig> {
+    let m = std::fs::metadata(p).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
+
 pub struct App {
     doc: Document,
+    meas_kind: MeasKind,
+    meas_value_key: String,
+    /// Signature of the open file as we last read or wrote it.
+    disk_sig: Option<FileSig>,
+    last_poll: std::time::Instant,
+    /// The open file changed on disk while we have unsaved edits: ask what to do.
+    disk_changed: bool,
     path: Option<PathBuf>,
     dirty: bool,
     vp: Viewport,
@@ -85,6 +150,11 @@ impl App {
         let vp = Viewport::new(cc);
         let mut app = App {
             doc: Document::new(),
+            meas_kind: MeasKind::Volume,
+            meas_value_key: String::new(),
+            disk_sig: None,
+            last_poll: std::time::Instant::now(),
+            disk_changed: false,
             path: None,
             dirty: false,
             vp,
@@ -402,6 +472,8 @@ impl App {
                 self.doc = d;
                 self.doc.recompute();
                 // FreeCAD files are imported; saving writes a .fcrs next to them.
+                self.disk_sig = if is_fcstd { None } else { file_sig(&p) };
+                self.disk_changed = false;
                 self.path = Some(if is_fcstd { p.with_extension("fcrs") } else { p });
                 self.dirty = is_fcstd;
                 self.undo.clear();
@@ -414,6 +486,68 @@ impl App {
         }
     }
 
+    /// Re-read the open .fcrs in place: camera and (still valid) selection stay.
+    fn reload_from_disk(&mut self) {
+        let Some(p) = self.path.clone() else { return };
+        let sig = file_sig(&p);
+        match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| Document::from_json(&s).map_err(|e| e.to_string())) {
+            Ok(d) => {
+                self.editor = None;
+                self.snapshot();
+                self.doc = d;
+                self.doc.recompute();
+                self.dirty = false;
+                self.disk_sig = sig;
+                self.disk_changed = false;
+                self.tree_sel.retain(|id| self.doc.get(*id).is_some());
+                self.fields.clear();
+                self.rebuild_scene();
+                self.vp.set_selection(self.selection.clone());
+                self.status = format!("Reloaded {}", p.display());
+            }
+            // Probably caught mid-write: try again at the next poll.
+            Err(e) => {
+                self.disk_sig = None;
+                self.status = format!("Could not reload {}: {e}", p.display());
+            }
+        }
+    }
+
+    /// Poll the open file every ~500 ms; our own saves update `disk_sig` and are ignored.
+    fn poll_disk(&mut self, ctx: &egui::Context) {
+        ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        if self.last_poll.elapsed() < std::time::Duration::from_millis(500) {
+            return;
+        }
+        self.last_poll = std::time::Instant::now();
+        let Some(p) = self.path.clone() else { return };
+        let Some(now) = file_sig(&p) else { return };
+        if self.disk_sig == Some(now) || self.disk_changed {
+            return;
+        }
+        if self.dirty || self.editor.is_some() {
+            self.disk_changed = true;
+        } else {
+            self.reload_from_disk();
+        }
+    }
+
+    fn disk_banner(&mut self, ui: &mut egui::Ui) {
+        let name = self.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        egui::Panel::top("disk_banner").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(egui::Color32::from_rgb(230, 170, 50), format!("⚠ {name} changed on disk"));
+                if ui.button("Reload").clicked() {
+                    self.reload_from_disk();
+                }
+                if ui.button("Keep mine").clicked() {
+                    self.disk_sig = self.path.as_deref().and_then(file_sig);
+                    self.disk_changed = false;
+                }
+            });
+        });
+    }
+
     fn save(&mut self, as_new: bool) {
         let path = match (&self.path, as_new) {
             (Some(p), false) => Some(p.clone()),
@@ -423,6 +557,8 @@ impl App {
             match std::fs::write(&p, self.doc.to_json()) {
                 Ok(()) => {
                     self.status = format!("Saved {}", p.display());
+                    self.disk_sig = file_sig(&p);
+                    self.disk_changed = false;
                     self.path = Some(p);
                     self.dirty = false;
                 }
@@ -928,13 +1064,19 @@ impl App {
         let (vals, errs) = self.doc.evaluate_expressions();
         let mut delete: Option<String> = None;
         let mut edit: Option<(String, String)> = None;
+        let mut release: Option<String> = None;
         egui::Grid::new("vars").num_columns(4).striped(true).show(ui, |ui| {
             for (k, v) in &params {
                 ui.label(egui::RichText::new(k).monospace());
                 let key = format!("param:{k}");
-                let buf = self.fields.entry(key.clone()).or_insert_with(|| v.clone());
-                if ui.add(egui::TextEdit::singleline(buf).desired_width(110.0)).lost_focus() && *buf != *v {
-                    edit = Some((k.clone(), buf.clone()));
+                let driven = self.doc.driven.get(k).cloned();
+                if driven.is_some() {
+                    ui.add_enabled(false, egui::Label::new(egui::RichText::new(format!("🔒 {v}")).monospace()));
+                } else {
+                    let buf = self.fields.entry(key.clone()).or_insert_with(|| v.clone());
+                    if ui.add(egui::TextEdit::singleline(buf).desired_width(110.0)).lost_focus() && *buf != *v {
+                        edit = Some((k.clone(), buf.clone()));
+                    }
                 }
                 match (vals.get(&key), errs.get(&key)) {
                     (_, Some(e)) => {
@@ -947,12 +1089,26 @@ impl App {
                         ui.label("");
                     }
                 }
-                if ui.small_button("🗑").on_hover_text("Delete variable").clicked() {
+                if let Some(src) = &driven {
+                    if ui.small_button("Release").on_hover_text(format!("Driven by {src}. Release to edit it here.")).clicked() {
+                        release = Some(k.clone());
+                    }
+                } else if ui.small_button("🗑").on_hover_text("Delete variable").clicked() {
                     delete = Some(k.clone());
                 }
                 ui.end_row();
             }
         });
+        for (k, src) in &self.doc.driven {
+            if self.doc.parameters.contains_key(k) {
+                ui.weak(format!("🔒 {k}: Driven by {src}"));
+            }
+        }
+        if let Some(k) = release {
+            self.change(|d| {
+                d.release_driven(&k);
+            });
+        }
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.new_param.0).hint_text("name").desired_width(70.0));
             ui.add(egui::TextEdit::singleline(&mut self.new_param.1).hint_text("value or formula").desired_width(100.0));
@@ -996,6 +1152,142 @@ impl App {
                     ui.weak(fmt_num(v));
                 });
             }
+        }
+    }
+
+    fn measurements(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Measurements");
+        let items = self.doc.measure_all();
+        let red = egui::Color32::from_rgb(230, 80, 60);
+        let mut delete: Option<String> = None;
+        let mut rename: Option<(String, String)> = None;
+        if items.is_empty() {
+            ui.weak("None yet. Add one below.");
+        }
+        egui::Grid::new("meas").num_columns(3).striped(true).show(ui, |ui| {
+            for (name, res) in &items {
+                let key = format!("meas:{name}");
+                let buf = self.fields.entry(key).or_insert_with(|| name.clone());
+                let resp = ui.add_sized([100.0, 20.0], egui::TextEdit::singleline(buf).font(egui::TextStyle::Monospace));
+                if resp.lost_focus() && *buf != *name {
+                    rename = Some((name.clone(), buf.trim().to_string()));
+                }
+                match res {
+                    Ok(m) => {
+                        let unit = dim_unit(m.dim);
+                        ui.label(format!("{} {unit}", fmt_num(m.value)));
+                    }
+                    Err(e) => {
+                        ui.colored_label(red, format!("⚠ {e}")).on_hover_text(e.to_string());
+                    }
+                }
+                if ui.small_button("🗑").on_hover_text("Delete measurement").clicked() {
+                    delete = Some(name.clone());
+                }
+                ui.end_row();
+            }
+        });
+        if let Some((from, to)) = rename {
+            let before = self.doc.to_json();
+            match self.doc.rename_measurement(&from, &to) {
+                Ok(()) => {
+                    self.undo.push(before);
+                    self.redo.clear();
+                    self.dirty = true;
+                }
+                Err(e) => self.status = e,
+            }
+            self.fields.retain(|k, _| !k.starts_with("meas:"));
+        }
+        if let Some(n) = delete {
+            self.change(|d| {
+                d.remove_measurement(&n);
+            });
+            self.fields.retain(|k, _| !k.starts_with("meas:"));
+        }
+
+        ui.add_space(4.0);
+        ui.weak("Add measurement");
+        egui::ComboBox::from_id_salt("meas_kind").selected_text(self.meas_kind.label()).width(210.0).show_ui(ui, |ui| {
+            for k in MeasKind::ALL {
+                ui.selectable_value(&mut self.meas_kind, k, k.label());
+            }
+        });
+        if self.meas_kind == MeasKind::Value {
+            let names = self.doc.available_names();
+            if !names.iter().any(|(n, _)| *n == self.meas_value_key) {
+                self.meas_value_key = names.first().map(|(n, _)| n.clone()).unwrap_or_default();
+            }
+            egui::ComboBox::from_id_salt("meas_value").selected_text(self.meas_value_key.clone()).width(210.0).show_ui(ui, |ui| {
+                for (n, v) in &names {
+                    ui.selectable_value(&mut self.meas_value_key, n.clone(), format!("{n}  ({})", fmt_num(*v)));
+                }
+            });
+        }
+        let need = self.meas_kind.faces_needed();
+        let faces: Vec<u32> = self.selection.iter().filter(|p| p.kind == PickKind::Face).map(|p| p.id + 1).collect();
+        if need > 0 {
+            let hint = if faces.len() == need { format!("Using selected face(s): {}", faces.iter().map(|f| format!("Face{f}")).collect::<Vec<_>>().join(", ")) } else { format!("Select {need} face(s) in the 3D view (ctrl-click for the second).") };
+            ui.weak(hint);
+        }
+        let ready = need == 0 || faces.len() == need;
+        if ui.add_enabled(ready, egui::Button::new("Add")).clicked() {
+            self.add_measurement(&faces);
+        }
+    }
+
+    fn add_measurement(&mut self, faces: &[u32]) {
+        let kind = self.meas_kind;
+        let Some(fid) = self.tip_solid_feature() else {
+            self.status = "Nothing to measure yet".into();
+            return;
+        };
+        let shape = self.doc.state(fid).and_then(|s| s.shape.clone());
+        let mut refs = vec![];
+        if kind.faces_needed() > 0 {
+            let Some(shape) = shape else { return };
+            for &f in faces {
+                match face_ref(fid, &shape, f as usize) {
+                    Ok(r) => refs.push(r),
+                    Err(e) => {
+                        self.status = format!("Face{f}: {e}");
+                        return;
+                    }
+                }
+            }
+        }
+        let (spec, base) = match kind {
+            MeasKind::Volume => (MeasureSpec::Volume, "Volume".to_string()),
+            MeasKind::Area => (MeasureSpec::Area, "Area".to_string()),
+            MeasKind::BBoxX => (MeasureSpec::BBoxX, "BBoxX".to_string()),
+            MeasKind::BBoxY => (MeasureSpec::BBoxY, "BBoxY".to_string()),
+            MeasKind::BBoxZ => (MeasureSpec::BBoxZ, "BBoxZ".to_string()),
+            MeasKind::Value => {
+                if self.meas_value_key.is_empty() {
+                    return;
+                }
+                let b: String = self.meas_value_key.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+                (MeasureSpec::Value { key: self.meas_value_key.clone() }, b)
+            }
+            MeasKind::FaceArea => (MeasureSpec::FaceArea { face: refs[0].clone() }, format!("FaceArea{}", faces[0])),
+            MeasKind::FaceDiameter => (MeasureSpec::FaceDiameter { face: refs[0].clone() }, format!("FaceDiameter{}", faces[0])),
+            MeasKind::FaceDistance => (MeasureSpec::FaceDistance { a: refs[0].clone(), b: refs[1].clone() }, format!("Distance{}_{}", faces[0], faces[1])),
+        };
+        let mut name = base.clone();
+        let mut n = 2;
+        while self.doc.measurements.contains_key(&name) || self.doc.parameters.contains_key(&name) {
+            name = format!("{base}{n}");
+            n += 1;
+        }
+        let before = self.doc.to_json();
+        match self.doc.set_measurement(&name, spec) {
+            Ok(()) => {
+                self.undo.push(before);
+                self.redo.clear();
+                self.dirty = true;
+                self.status = format!("Added measurement {name}");
+            }
+            Err(e) => self.status = e,
         }
     }
 
@@ -1163,6 +1455,15 @@ impl App {
                     }),
                     "editing" => Some(self.editor.is_some().to_string()),
                     "features" => Some(self.doc.features.len().to_string()),
+                    "measure" | "param" => {
+                        let (n, want) = val.split_once(' ').unwrap_or((&val, ""));
+                        let got = if what == "measure" { self.doc.measure(n).ok().map(|m| m.value) } else { self.doc.evaluate_expressions().0.get(&format!("param:{n}")).copied() };
+                        let ok = got.zip(want.parse::<f64>().ok()).is_some_and(|(a, b)| (a - b).abs() <= 1e-3 * b.abs().max(1.0));
+                        Some(if ok { val.clone() } else { format!("{got:?}") })
+                    }
+                    "banner" => Some(self.disk_changed.to_string()),
+                    "dirty" => Some(self.dirty.to_string()),
+                    "driven" => Some(self.doc.driven.contains_key(&val).to_string()).map(|s| if s == "true" { val.clone() } else { s }),
                     "volume" => self.doc.result().map(|s| format!("{:.3}", s.volume())),
                     "geometry" => self.editor.as_ref().and_then(|e| self.doc.get(e.feature())).and_then(|f| match &f.kind {
                         FeatureKind::Sketch(s) => Some(s.sketch.geometry.len().to_string()),
@@ -1186,6 +1487,36 @@ impl App {
                     run.failures += 1;
                 }
             }
+            Step::Do(cmd, arg) => match cmd.as_str() {
+                "demo" => {
+                    self.doc = crate::demo::demo_document();
+                    self.path = None;
+                    self.after_change();
+                    self.dirty = false;
+                }
+                "saveto" => {
+                    let p = PathBuf::from(&arg);
+                    if std::fs::write(&p, self.doc.to_json()).is_ok() {
+                        self.path = Some(p.clone());
+                        self.disk_sig = file_sig(&p);
+                        self.dirty = false;
+                    }
+                }
+                "external" => {
+                    // Rewrite the open file as another program would; sleep so the mtime moves.
+                    std::thread::sleep(std::time::Duration::from_millis(1100));
+                    let (name, expr) = arg.split_once(' ').unwrap_or((&arg, "0"));
+                    let ok = self.path.clone().is_some_and(|p| {
+                        let mut d = std::fs::read_to_string(&p).ok().and_then(|s| Document::from_json(&s).ok()).expect("open file");
+                        d.set_driven_parameters(&[(name.to_string(), expr.to_string())], "Calc Canvas: Plate").is_ok() && std::fs::write(&p, d.to_json()).is_ok()
+                    });
+                    if !ok {
+                        eprintln!("[input] FAIL: external write");
+                        run.failures += 1;
+                    }
+                }
+                _ => {}
+            },
             Step::Shot(p) => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(p)));
                 run.wait = 3;
@@ -1215,7 +1546,11 @@ impl eframe::App for App {
             }
         }
         self.shortcuts(ctx);
+        self.poll_disk(ctx);
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
+        if self.disk_changed {
+            self.disk_banner(ui);
+        }
 
         egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -1245,6 +1580,8 @@ impl eframe::App for App {
                 self.properties(ui);
                 ui.separator();
                 self.variables(ui);
+                ui.separator();
+                self.measurements(ui);
             });
         });
 

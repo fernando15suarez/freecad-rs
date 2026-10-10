@@ -1,0 +1,64 @@
+# Measurements panel + driven parameters + reload when the file changes on disk.
+wait 5
+demo
+saveto OUT/calc_link.fcrs
+wait 5
+# Volume, Surface area, Bounding box X via the Add control
+at screen 24 456
+click
+wait 3
+at screen 112 427
+click
+wait 3
+at screen 60 474
+click
+wait 3
+at screen 24 448
+click
+wait 3
+at screen 112 445
+click
+wait 3
+at screen 60 513
+click
+wait 3
+at screen 24 466
+click
+wait 3
+# Face area of the picked top face
+at world 10 -15 10
+click
+wait 3
+at screen 112 474
+click
+wait 3
+at screen 60 626
+click
+wait 3
+at screen 24 513
+click
+wait 5
+expect measure Volume 21050.2213
+expect measure FaceArea5 1824.9668
+shot OUT/calc_measure.png
+saveto OUT/calc_link.fcrs
+# Another program rewrites the file (thickness 25, driven): no unsaved edits -> reloads in place
+external thickness 25 mm
+wait 150
+expect banner false
+expect driven thickness
+expect param thickness 25
+expect measure Volume 56626.1063
+shot OUT/calc_driven.png
+# Now with an unsaved edit the same kind of change only raises the banner
+expect dirty false
+at screen 24 552
+click
+wait 3
+expect dirty true
+external thickness 12 mm
+wait 150
+expect banner true
+expect param thickness 25
+shot OUT/calc_banner.png
+quit
