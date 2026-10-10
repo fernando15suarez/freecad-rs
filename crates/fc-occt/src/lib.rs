@@ -79,6 +79,10 @@ impl Shape {
     pub fn bbox(&self) -> [f64; 6] {
         sys::bbox(self.r())
     }
+    /// Tight bounding box from the exact geometry (no tolerance gap).
+    pub fn bbox_exact(&self) -> [f64; 6] {
+        sys::bbox_exact(self.r())
+    }
     pub fn solid_count(&self) -> usize {
         sys::count_solids(self.r())
     }

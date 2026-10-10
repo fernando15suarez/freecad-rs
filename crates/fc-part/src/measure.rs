@@ -182,7 +182,7 @@ impl Document {
             MeasureSpec::Volume => ok(shape.volume()),
             MeasureSpec::Area => ok(shape.area()),
             MeasureSpec::BBoxX | MeasureSpec::BBoxY | MeasureSpec::BBoxZ => {
-                let b = shape.bbox();
+                let b = shape.bbox_exact();
                 let k = match spec {
                     MeasureSpec::BBoxX => 0,
                     MeasureSpec::BBoxY => 1,

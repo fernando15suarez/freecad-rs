@@ -76,6 +76,7 @@ pub mod ffi {
         fn volume(s: &Shape) -> f64;
         fn area(s: &Shape) -> f64;
         fn bbox(s: &Shape) -> [f64; 6];
+        fn bbox_exact(s: &Shape) -> [f64; 6];
         fn count_solids(s: &Shape) -> usize;
         fn count_faces(s: &Shape) -> usize;
         fn count_edges(s: &Shape) -> usize;

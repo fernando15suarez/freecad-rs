@@ -5,6 +5,7 @@ mod scene;
 mod sketcher;
 mod gpu;
 mod input_script;
+mod plane_picker;
 mod viewport;
 
 use std::path::PathBuf;

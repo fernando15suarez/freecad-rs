@@ -2,7 +2,7 @@ wait 5
 at screen 904 11
 click
 wait 10
-at screen 506 402
+at screen 140 140
 click
 wait 5
 expect editing true

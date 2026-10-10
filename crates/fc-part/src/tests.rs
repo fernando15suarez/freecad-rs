@@ -337,7 +337,7 @@ fn named_measurements_follow_parameters() {
     doc.set_driven_parameters(&[("width".into(), "30 mm".into()), ("thick".into(), "8 mm".into())], "Calc Canvas: Plate").unwrap();
     doc.recompute();
     assert!(close(m(&doc, "V"), 30.0 * 10.0 * 8.0));
-    assert!(close(m(&doc, "L"), 30.0));
+    assert!((m(&doc, "L") - 30.0).abs() < 1e-7, "{}", m(&doc, "L"));
     assert!(close(m(&doc, "t"), 8.0));
     assert!(close(m(&doc, "w"), 30.0));
     assert_eq!(doc.driven.get("width").map(String::as_str), Some("Calc Canvas: Plate"));

@@ -3,7 +3,7 @@ at screen 904 11
 click
 wait 10
 # XZ plane
-at screen 506 423
+at screen 140 199
 click
 wait 5
 expect editing true

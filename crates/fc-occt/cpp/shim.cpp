@@ -363,6 +363,17 @@ std::array<double, 6> bbox(const Shape &s) {
     return {x0, y0, z0, x1, y1, z1};
 }
 
+// Tight box from the exact geometry (no shape tolerance gap), for measurements.
+std::array<double, 6> bbox_exact(const Shape &s) {
+    if (s.s.IsNull()) return {0, 0, 0, 0, 0, 0};
+    Bnd_Box b;
+    BRepBndLib::AddOptimal(s.s, b, Standard_False, Standard_False);
+    if (b.IsVoid()) return {0, 0, 0, 0, 0, 0};
+    double x0, y0, z0, x1, y1, z1;
+    b.Get(x0, y0, z0, x1, y1, z1);
+    return {x0, y0, z0, x1, y1, z1};
+}
+
 static size_t count(const Shape &s, TopAbs_ShapeEnum t) {
     if (s.s.IsNull()) return 0;
     TopTools_IndexedMapOfShape m;

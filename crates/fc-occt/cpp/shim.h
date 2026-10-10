@@ -55,6 +55,7 @@ bool is_valid(const Shape &s);
 double volume(const Shape &s);
 double area(const Shape &s);
 std::array<double, 6> bbox(const Shape &s);
+std::array<double, 6> bbox_exact(const Shape &s);
 size_t count_solids(const Shape &s);
 size_t count_faces(const Shape &s);
 size_t count_edges(const Shape &s);

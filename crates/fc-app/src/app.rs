@@ -13,7 +13,6 @@ use std::path::PathBuf;
 
 /// Something waiting on the user in a modal window.
 enum Dialog {
-    NewSketch,
     ConfirmDelete { what: DeleteWhat, users: Vec<String> },
     Message(String),
 }
@@ -110,6 +109,8 @@ pub struct App {
     first_frame: bool,
     /// Test hook: scripted raw input (`FCRS_INPUT`).
     input: Option<crate::input_script::Runner>,
+    /// Choosing the plane/face for a new sketch: index of the first plane object in the view.
+    picking_plane: Option<usize>,
 }
 
 fn pick_name(vp: &Viewport, p: &Pick) -> String {
@@ -171,6 +172,7 @@ impl App {
             screenshot: screenshot.map(|p| (p, 0)),
             first_frame: true,
             input: None,
+            picking_plane: None,
         };
         if let Ok(p) = std::env::var("FCRS_INPUT") {
             match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| crate::input_script::parse(&s)) {
@@ -218,7 +220,12 @@ impl App {
     // ------------------------------------------------------------------ model ops
 
     fn rebuild_scene(&mut self) {
-        let objs = scene::body_objects(&self.doc);
+        let mut objs = scene::body_objects(&self.doc);
+        if self.picking_plane.is_some() {
+            self.picking_plane = Some(objs.len());
+            let half = crate::plane_picker::plane_half_size(self.doc.result().map(|s| s.bbox()));
+            objs.extend(crate::plane_picker::plane_objects(half));
+        }
         self.vp.set_objects(objs);
         if self.editor.is_none() {
             let hl = self.tree_sel.iter().copied().find(|id| matches!(self.doc.get(*id).map(|f| &f.kind), Some(FeatureKind::Sketch(_))));
@@ -344,7 +351,104 @@ impl App {
                 }
             }
         }
-        self.dialog = Some(Dialog::NewSketch);
+        self.start_plane_pick();
+    }
+
+    /// FreeCAD-style "Select feature": show the origin planes and let the user click one,
+    /// or a flat face of the part.
+    fn start_plane_pick(&mut self) {
+        self.picking_plane = Some(0);
+        self.selection.clear();
+        self.vp.set_selection(vec![]);
+        self.rebuild_scene();
+        if self.doc.result().is_none() {
+            self.vp.set_standard_view(StandardView::Isometric);
+        }
+        self.status = "Click a plane or a flat face of the part to sketch on (Esc cancels)".into();
+    }
+
+    fn end_plane_pick(&mut self) {
+        self.picking_plane = None;
+        self.rebuild_scene();
+    }
+
+    /// Handle a click while picking: true if it chose a support.
+    fn pick_support(&mut self, p: &Pick) -> bool {
+        let Some(first) = self.picking_plane else { return false };
+        if p.object >= first {
+            let i = p.object - first;
+            if let Some(pl) = crate::plane_picker::planes().into_iter().nth(i) {
+                self.end_plane_pick();
+                self.create_sketch(pl.support);
+                return true;
+            }
+        } else if p.kind == PickKind::Face {
+            if let Some(fid) = self.tip_solid_feature() {
+                if let Some(shape) = self.doc.state(fid).and_then(|s| s.shape.clone()) {
+                    let face = p.id as usize + 1;
+                    match shape.face_info(face) {
+                        Ok(fi) if fi.kind == 0 => {
+                            if let Ok(fr) = face_ref(fid, &shape, face) {
+                                self.end_plane_pick();
+                                self.create_sketch(Support::Face(fr));
+                                return true;
+                            }
+                        }
+                        _ => self.status = "That face is curved; pick a flat face or a plane".into(),
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Plane names next to their corners, like FreeCAD's origin labels.
+    fn draw_plane_labels(&self, ui: &egui::Ui, ctx: &egui::Context) {
+        let half = crate::plane_picker::plane_half_size(self.doc.result().map(|s| s.bbox()));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("plane_labels")));
+        let clip = ui.clip_rect();
+        for p in crate::plane_picker::planes() {
+            if let Some(pos) = self.vp.world_to_screen(p.placement.to_world(half, half)) {
+                if clip.contains(pos) {
+                    painter.text(pos + egui::vec2(4.0, -4.0), egui::Align2::LEFT_BOTTOM, p.name, egui::FontId::proportional(14.0), egui::Color32::from_rgb(40, 40, 90));
+                }
+            }
+        }
+    }
+
+    fn plane_pick_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("New sketch");
+        ui.label("Pick where to draw: click one of the planes or a flat face of the part in the 3D view, or choose a plane here.");
+        ui.add_space(6.0);
+        let first = self.picking_plane.unwrap_or(0);
+        let hovered_plane = self.hovered.as_ref().filter(|h| h.object >= first).map(|h| h.object - first);
+        let mut chosen = None;
+        let mut any_hovered = false;
+        for (i, p) in crate::plane_picker::planes().into_iter().enumerate() {
+            let r = ui.add_sized([ui.available_width(), 34.0], egui::Button::new(egui::RichText::new(format!("▱  {}", p.name)).size(15.0)).selected(hovered_plane == Some(i)));
+            let r = r.on_hover_text(p.hint);
+            if r.hovered() {
+                any_hovered = true;
+                self.vp.force_hover(Some(Pick { object: first + i, kind: PickKind::Face, id: 0, point: [0.0; 3] }));
+            }
+            if r.clicked() {
+                chosen = Some(p.support);
+            }
+            ui.weak(p.hint);
+            ui.add_space(4.0);
+        }
+        if !any_hovered {
+            self.vp.force_hover(None);
+        }
+        ui.add_space(8.0);
+        if ui.button("Cancel").clicked() {
+            self.end_plane_pick();
+            self.status = "Ready".into();
+        }
+        if let Some(s) = chosen {
+            self.end_plane_pick();
+            self.create_sketch(s);
+        }
     }
 
     fn create_sketch(&mut self, support: Support) {
@@ -1295,20 +1399,6 @@ impl App {
         let Some(d) = self.dialog.take() else { return };
         let mut keep = true;
         match &d {
-            Dialog::NewSketch => {
-                egui::Window::new("New sketch").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-                    ui.label("Attach the sketch to a base plane (or cancel, select a flat face and try again):");
-                    for (name, s) in [("XY plane", Support::XY), ("XZ plane", Support::XZ), ("YZ plane", Support::YZ)] {
-                        if ui.button(name).clicked() {
-                            keep = false;
-                            self.create_sketch(s);
-                        }
-                    }
-                    if ui.button("Cancel").clicked() {
-                        keep = false;
-                    }
-                });
-            }
             Dialog::ConfirmDelete { what, users } => {
                 let what = what.clone();
                 egui::Window::new("Delete").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
@@ -1574,6 +1664,10 @@ impl eframe::App for App {
                 }
                 return;
             }
+            if self.picking_plane.is_some() {
+                self.plane_pick_panel(ui);
+                return;
+            }
             self.tree(ui);
             ui.separator();
             egui::ScrollArea::vertical().id_salt("props").show(ui, |ui| {
@@ -1591,6 +1685,16 @@ impl eframe::App for App {
             if let Some(mut ed) = self.editor.take() {
                 ed.handle_viewport(&mut self.doc, &mut self.vp, &r, ctx);
                 self.editor = Some(ed);
+                return;
+            }
+            if self.picking_plane.is_some() {
+                if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    self.end_plane_pick();
+                    self.status = "Ready".into();
+                } else if let Some(p) = r.clicked.clone() {
+                    self.pick_support(&p);
+                }
+                self.draw_plane_labels(ui, ctx);
                 return;
             }
             if r.response.clicked() {
