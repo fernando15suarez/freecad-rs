@@ -13,6 +13,7 @@ glam = "0.32"
 fc-sketch = { path = "../fc-sketch" }
 fc-part = { path = "../fc-part" }
 fc-occt = { path = "../fc-occt" }
+fc-assembly = { path = "../fc-assembly" }
 rfd = "0.17.2"
 serde_json = "1"
 image = { version = "0.25.10", default-features = false, features = ["png"] }

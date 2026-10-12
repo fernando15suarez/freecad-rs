@@ -10,6 +10,7 @@ mod theme;
 mod widgets;
 mod input_script;
 mod plane_picker;
+mod mate_ui;
 mod viewport;
 
 use std::path::PathBuf;

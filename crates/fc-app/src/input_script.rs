@@ -5,6 +5,9 @@
 //!   at sketch X Y        move pointer to sketch coordinates of the sketch being edited
 //!   at world X Y Z       move pointer to the screen projection of a world point
 //!   at screen X Y        move pointer to logical screen coordinates
+//!   at triad NAME        move pointer to a mate connector triad (Part Design: the connector's
+//!                        name; assembly: INSTANCE.CONNECTOR or an assembly connector's name)
+//!   at inst NAME X Y Z   move pointer to a point given in an assembly instance's coordinates
 //!   at ui NAME           move pointer to the center of a named widget (see `widgets::reg`):
 //!                        tb:<action>, task:ok, task:cancel, plane:XY, tree:<feature name>,
 //!                        prop:<property>, field:<Feature.Param>, tab:<name>, combo:<id>, opt:<id>:<label>
@@ -20,6 +23,10 @@
 //!   demo | saveto PATH | external NAME EXPR   (test helpers: load the demo, save to PATH, and rewrite the open
 //!     file on disk the way Calc Canvas does: parameter NAME = EXPR, marked driven)
 //!   expect measure NAME V | param NAME V | driven NAME | banner true|false | dirty true|false
+//!   asmdemo | mark       load two demo parts (Plate, Pin) with mate connectors / remember placements
+//!   expect tab part NAME|assembly NAME | instances N | joints N | joint TYPE NAME | grounded NAME true|false
+//!   expect dof N (assembly) | solved true | moved NAME true|false | fixed_point NAME X Y Z (since mark)
+//!   expect connector NAME X Y Z | anchor EdgeN... | asmtask true|false
 //!   shot PATH            save a screenshot
 //!   quit
 
@@ -31,6 +38,8 @@ pub enum Step {
     AtWorld([f64; 3]),
     AtScreen(f32, f32),
     AtUi(String),
+    AtTriad(String),
+    AtInst(String, [f64; 3]),
     Down(PointerButton),
     Up(PointerButton),
     Click(PointerButton),
@@ -65,6 +74,8 @@ pub fn parse(src: &str) -> Result<Vec<Step>, String> {
                 Some("world") => Step::AtWorld([f(2)?, f(3)?, f(4)?]),
                 Some("screen") => Step::AtScreen(f(2)? as f32, f(3)? as f32),
                 Some("ui") => Step::AtUi(line.splitn(3, ' ').nth(2).unwrap_or("").trim().to_string()),
+                Some("triad") => Step::AtTriad(w.get(2).unwrap_or(&"").to_string()),
+                Some("inst") => Step::AtInst(w.get(2).unwrap_or(&"").to_string(), [f(3)?, f(4)?, f(5)?]),
                 _ => return Err(format!("line {}: at sketch|world|screen|ui", ln + 1)),
             },
             "down" => Step::Down(button(1)),
@@ -92,7 +103,7 @@ pub fn parse(src: &str) -> Result<Vec<Step>, String> {
             "scroll" => Step::Scroll(f(1)? as f32, f(2)? as f32),
             "wait" => Step::Wait(f(1)? as u32),
             "expect" => Step::Expect(w.get(1).unwrap_or(&"").to_string(), w[2.min(w.len())..].join(" ")),
-            "demo" | "saveto" | "external" => Step::Do(w[0].to_string(), line[w[0].len()..].trim().to_string()),
+            "demo" | "saveto" | "external" | "asmdemo" | "mark" => Step::Do(w[0].to_string(), line[w[0].len()..].trim().to_string()),
             "shot" => Step::Shot(w.get(1).unwrap_or(&"").to_string()),
             "quit" => Step::Quit,
             other => return Err(format!("line {}: unknown step '{other}'", ln + 1)),
@@ -110,11 +121,13 @@ pub struct Runner {
     pub failures: u32,
     /// A click in progress: release on the next frame.
     pub pending: Vec<Event>,
+    /// Instance placements remembered by `mark`.
+    pub marks: std::collections::HashMap<String, fc_assembly::Frame>,
 }
 
 impl Runner {
     pub fn new(steps: Vec<Step>) -> Self {
-        Runner { steps: steps.into(), pointer: Pos2::new(10.0, 10.0), wait: 0, failures: 0, pending: vec![] }
+        Runner { steps: steps.into(), pointer: Pos2::new(10.0, 10.0), wait: 0, failures: 0, pending: vec![], marks: Default::default() }
     }
 
     pub fn button_event(&self, button: PointerButton, pressed: bool) -> Event {

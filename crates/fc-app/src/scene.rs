@@ -33,7 +33,8 @@ pub fn shape_object(name: &str, shape: &Shape, color: [f32; 4]) -> Option<SceneO
             edges.push(SceneEdge { id: i as u32, points: pts });
         }
     }
-    Some(SceneObject { name: name.to_string(), mesh: SceneMesh { positions, normals, indices: m.indices, tri_face }, edges, visible: true, color })
+    let vertices = shape.vertices().iter().map(|v| [v[0] as f32, v[1] as f32, v[2] as f32]).collect();
+    Some(SceneObject { name: name.to_string(), mesh: SceneMesh { positions, normals, indices: m.indices, tri_face }, edges, vertices, visible: true, color })
 }
 
 /// The body's tip solid as the single pickable object (index 0).

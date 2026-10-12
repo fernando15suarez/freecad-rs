@@ -255,6 +255,8 @@ impl App {
             widgets::dock_title(ui, "Tasks");
             if self.editor.is_some() {
                 self.sketch_task(ui);
+            } else if self.active_assembly().is_some() {
+                self.asm_task_panel(ui);
             } else if self.picking {
                 self.attachment_task(ui);
             } else if self.task.is_some() {
@@ -373,7 +375,13 @@ impl App {
                 });
                 ui.add_space(8.0);
             }
-            let title = format!("{} parameters", feature_title(&f.kind));
+            if matches!(f.kind, FeatureKind::MateConnector(_)) {
+                task_box(ui, "mate_ref", "Std_CoordinateSystem", "Origin", |ui| {
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    self.mate_ref_box(ui, id);
+                });
+            }
+            let title = if matches!(f.kind, FeatureKind::MateConnector(_)) { "Offsets and rotation".to_string() } else { format!("{} parameters", feature_title(&f.kind)) };
             task_box(ui, "feature", feature_icon(&f.kind), &title, |ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
                 self.feature_params(ui, id, &mut Lay::Task);

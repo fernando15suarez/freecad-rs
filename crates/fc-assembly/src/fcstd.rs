@@ -110,6 +110,23 @@ fn guess_distance_mode(e1: &str, e2: &str) -> DistanceMode {
     }
 }
 
+/// The PartDesign Body an assembly member stands for (FreeCAD object name).
+fn member_body(objects: &HashMap<String, Obj>, m: &str) -> Option<String> {
+    let o = objects.get(m)?;
+    match o.ty.as_str() {
+        "PartDesign::Body" => Some(m.to_string()),
+        "App::Link" => {
+            let t = prop_xlink(o, "LinkedObject").map(|x| x.0).or_else(|| prop_links(o, "LinkedObject").into_iter().next())?;
+            if t == m {
+                return None;
+            }
+            member_body(objects, &t)
+        }
+        "App::Part" => prop_links(o, "Group").into_iter().find(|c| objects.get(c).is_some_and(|x| x.ty == "PartDesign::Body")),
+        _ => None,
+    }
+}
+
 pub fn import_document_xml(text: &str) -> Result<(Workspace, Vec<String>), FcstdError> {
     let doc = roxmltree::Document::parse(text).map_err(|e| FcstdError::Xml(e.to_string()))?;
     let root = doc.root_element();
@@ -150,6 +167,7 @@ pub fn import_document_xml(text: &str) -> Result<(Workspace, Vec<String>), Fcstd
         let label = prop_string(ao, "Label").unwrap_or_else(|| an.clone());
         let aid = ws.add_assembly(&label);
         let mut asm = Assembly::new(&label);
+        let mut body_parts: HashMap<String, crate::model::PartId> = HashMap::new();
         asm.id = aid;
         let group = prop_links(ao, "Group");
         let mut members: Vec<String> = vec![];
@@ -169,10 +187,36 @@ pub fn import_document_xml(text: &str) -> Result<(Workspace, Vec<String>), Fcstd
         for m in &members {
             let o = &objects[m];
             let name = prop_string(o, "Label").unwrap_or_else(|| m.clone());
-            let pid = ws.add_part(&name, fc_part::Document::new());
             let pl = prop_placement(o, "Placement").unwrap_or_default();
+            // The PartDesign Body behind the member: itself, a link's target, or the Body inside an App::Part.
+            let body = member_body(&objects, m);
+            let pid = match body.as_ref().and_then(|b| body_parts.get(b).copied()) {
+                Some(pid) => pid,
+                None => {
+                    let doc = body.as_ref().and_then(|b| match fc_part::fcstd::import_body_xml(text, Some(b)) {
+                        Ok((d, rep)) => {
+                            for n in rep.notes.iter().filter(|n| !matches!(n.kind, fc_part::fcstd::NoteKind::Info)) {
+                                notes.push(format!("{b}/{}: {}", n.object, n.message));
+                            }
+                            Some(d)
+                        }
+                        Err(e) => {
+                            notes.push(format!("{b}: body not imported ({e})"));
+                            None
+                        }
+                    });
+                    let has_geometry = doc.is_some();
+                    let pid = ws.add_part(&name, doc.unwrap_or_default());
+                    match &body {
+                        Some(b) if has_geometry => {
+                            body_parts.insert(b.clone(), pid);
+                        }
+                        _ => notes.push(format!("{m}: {} imported as a placeholder part (no geometry)", o.ty)),
+                    }
+                    pid
+                }
+            };
             inst.insert(m.clone(), asm.add_part_instance(&name, pid, pl));
-            notes.push(format!("{m}: {} imported as a placeholder part (no geometry)", o.ty));
         }
         let mut seen = std::collections::HashSet::new();
         for jn in &joints {

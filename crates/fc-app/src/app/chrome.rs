@@ -36,6 +36,15 @@ pub(super) enum Act {
     LeaveSketch,
     ViewSketch,
     About,
+    MateConnector,
+    NewPart,
+    NewAssembly,
+    AsmInsert,
+    Ground,
+    Joint(&'static str),
+    AsmConnector,
+    Solve,
+    Workbench(bool),
 }
 
 const VIEWS: [(StandardView, &str, &str, &str, &str); 7] = [
@@ -64,10 +73,26 @@ impl App {
             Act::Undo => self.undo(),
             Act::Redo => self.redo(),
             Act::Delete => {
-                if self.editor.is_none() && self.task.is_none() {
+                if self.active_assembly().is_some() {
+                    if self.idle() {
+                        self.asm_delete_selected();
+                    }
+                } else if self.editor.is_none() && self.task.is_none() {
                     self.delete_selected();
                 }
             }
+            Act::MateConnector => self.add_mate_connector(),
+            Act::NewPart => self.new_part(),
+            Act::NewAssembly => self.new_assembly(),
+            Act::AsmInsert => self.asm_insert(),
+            Act::Ground => self.toggle_grounded(),
+            Act::Joint(name) => self.start_joint(super::assembly::joint_kind(name)),
+            Act::AsmConnector => self.start_asm_connector(),
+            Act::Solve => {
+                self.solve_active(true);
+                self.status = self.solver_message().0;
+            }
+            Act::Workbench(asm) => self.switch_workbench(asm),
             Act::FitAll => {
                 if let Some(ed) = self.editor.as_mut() {
                     ed.fit();
@@ -108,7 +133,11 @@ impl App {
             Act::AddPipe => self.add_loft_or_pipe(false, true),
             Act::SubPipe => self.add_loft_or_pipe(true, true),
             Act::Edit => {
-                if let Some(&id) = self.tree_sel.last() {
+                if self.active_assembly().is_some() {
+                    if let Some(super::assembly::AsmSel::Joint(j)) = self.asm.sel.last().copied() {
+                        self.edit_joint(j);
+                    }
+                } else if let Some(&id) = self.tree_sel.last() {
                     self.edit_feature(id);
                 }
             }
@@ -142,7 +171,7 @@ impl App {
             Act::ExportStl => ("Std_Export", "Export STL...", "Exports the body as an STL mesh", String::new(), idle && self.doc.result().is_some()),
             Act::Undo => ("edit-undo", "Undo", "Undoes the last change", k("Ctrl+Z"), self.can_undo()),
             Act::Redo => ("edit-redo", "Redo", "Redoes a previously undone change", k("Ctrl+Shift+Z"), self.can_redo()),
-            Act::Delete => ("edit-delete", "Delete", "Deletes the selected feature", "Del".into(), idle && !self.tree_sel.is_empty()),
+            Act::Delete => ("edit-delete", "Delete", "Deletes the selected item", "Del".into(), idle && (!self.tree_sel.is_empty() || !self.asm.sel.is_empty())),
             Act::FitAll => ("zoom-all", "Fit All", "Fits the whole content on the screen", "V, F".into(), true),
             Act::View(v) => {
                 let (_, icon, title, desc, key) = VIEWS.iter().find(|x| x.0 == v).copied().unwrap();
@@ -161,10 +190,36 @@ impl App {
             Act::SubLoft => ("PartDesign_SubtractiveLoft", "Subtractive Loft", "Cuts a loft through two or more sketches", String::new(), two_sketches),
             Act::AddPipe => ("PartDesign_AdditivePipe", "Additive Pipe", "Sweeps a profile sketch along a path sketch (select profile, then path)", String::new(), two_sketches),
             Act::SubPipe => ("PartDesign_SubtractivePipe", "Subtractive Pipe", "Cuts by sweeping a profile along a path", String::new(), two_sketches),
-            Act::Edit => ("edit-edit", "Edit", "Edits the selected feature or sketch", String::new(), idle && !self.tree_sel.is_empty()),
+            Act::Edit => ("edit-edit", "Edit", "Edits the selected feature, sketch or joint", String::new(), idle && (!self.tree_sel.is_empty() || matches!(self.asm.sel.last(), Some(super::assembly::AsmSel::Joint(_))))),
             Act::LeaveSketch => ("Sketcher_LeaveSketch", "Leave Sketch", "Finishes editing the active sketch", String::new(), self.editor.is_some()),
             Act::ViewSketch => ("Sketcher_ViewSketch", "View Sketch", "Sets the camera orientation perpendicular to the sketch plane and fits it", "Q, P".into(), self.editor.is_some()),
             Act::About => ("help-browser", "About freecad-rs", "", String::new(), true),
+            Act::MateConnector => ("Std_CoordinateSystem", "Mate Connector", "Creates an Onshape-style mate connector: pick a face, edge or vertex; it snaps to the inferred center, midpoint or vertex. Assemblies join parts by their connectors.", String::new(), idle && self.active_part().is_some()),
+            Act::NewPart => ("PartDesign_Body", "New Part", "Creates a new part (Body) in the document and opens it", String::new(), idle),
+            Act::NewAssembly => ("Geoassembly", "Create Assembly", "Creates a new assembly in the document and opens it", String::new(), idle),
+            Act::AsmInsert => ("Assembly_InsertLink", "Insert Component", "Inserts a part of the document into the assembly (several times if needed)", "I".into(), idle && self.active_assembly().is_some()),
+            Act::Ground => ("Assembly_ToggleGrounded", "Toggle Grounded", "Grounds the selected part (it stays fixed) or releases it", "G".into(), idle && self.active_assembly().is_some()),
+            Act::Joint(name) => {
+                let (_, icon, tip) = super::assembly::JOINT_TOOLS.iter().find(|x| x.0 == name).copied().unwrap_or(("", "Assembly_CreateJointFixed", ""));
+                let title = match name {
+                    "Fixed" => "Create a Fixed Joint",
+                    "Revolute" => "Create a Revolute Joint",
+                    "Cylindrical" => "Create a Cylindrical Joint",
+                    "Slider" => "Create a Slider Joint",
+                    "Ball" => "Create a Ball Joint",
+                    "Distance" => "Create a Distance Joint",
+                    "Parallel" => "Create a Parallel Joint",
+                    "Perpendicular" => "Create a Perpendicular Joint",
+                    "Angle" => "Create an Angle Joint",
+                    "Planar" => "Create a Planar Mate",
+                    _ => "Create a Pin Slot Mate",
+                };
+                (icon, title, tip, String::new(), idle && self.active_assembly().is_some())
+            }
+            Act::AsmConnector => ("Std_CoordinateSystem", "Assembly Mate Connector", "Adds a mate connector to the assembly, anchored to a part's face, edge or vertex", String::new(), idle && self.active_assembly().is_some()),
+            Act::Solve => ("Assembly_SolveAssembly", "Solve Assembly", "Solves the assembly's joints again", String::new(), idle && self.active_assembly().is_some()),
+            Act::Workbench(true) => ("AssemblyWorkbench", "Assembly", "Assembly workbench: parts, joints and mate connectors", String::new(), idle),
+            Act::Workbench(false) => ("PartDesignWorkbench", "Part Design", "Part Design workbench: sketches and features of a part", String::new(), idle),
         }
     }
 
@@ -197,6 +252,9 @@ impl App {
                     self.menu_item(ui, a);
                 }
                 ui.separator();
+                self.menu_item(ui, Act::NewPart);
+                self.menu_item(ui, Act::NewAssembly);
+                ui.separator();
                 self.menu_item(ui, Act::ExportStep);
                 self.menu_item(ui, Act::ExportStl);
             });
@@ -223,7 +281,23 @@ impl App {
                 ui.separator();
                 self.menu_item(ui, Act::ToggleOrigin);
             });
-            if self.editor.is_some() {
+            if self.active_assembly().is_some() {
+                ui.menu_button("Assembly", |ui| {
+                    ui.set_min_width(240.0);
+                    self.menu_item(ui, Act::NewAssembly);
+                    self.menu_item(ui, Act::AsmInsert);
+                    self.menu_item(ui, Act::Solve);
+                    ui.separator();
+                    self.menu_item(ui, Act::Ground);
+                    ui.menu_button("Joints", |ui| {
+                        ui.set_min_width(220.0);
+                        for (n, _, _) in super::assembly::JOINT_TOOLS {
+                            self.menu_item(ui, Act::Joint(n));
+                        }
+                    });
+                    self.menu_item(ui, Act::AsmConnector);
+                });
+            } else if self.editor.is_some() {
                 ui.menu_button("Sketch", |ui| {
                     ui.set_min_width(220.0);
                     self.menu_item(ui, Act::ViewSketch);
@@ -233,6 +307,7 @@ impl App {
                 ui.menu_button("Part Design", |ui| {
                     ui.set_min_width(220.0);
                     self.menu_item(ui, Act::NewSketch);
+                    self.menu_item(ui, Act::MateConnector);
                     ui.separator();
                     ui.menu_button("Create an additive feature", |ui| {
                         ui.set_min_width(200.0);
@@ -256,9 +331,16 @@ impl App {
     }
 
     /// Fake workbench selector (FreeCAD's combo box showing the active workbench).
-    fn workbench_box(&self, ui: &mut egui::Ui) {
-        let (icon, name) = if self.editor.is_some() { ("SketcherWorkbench", "Sketcher") } else { ("PartDesignWorkbench", "Part Design") };
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(170.0, 24.0), egui::Sense::hover());
+    fn workbench_box(&mut self, ui: &mut egui::Ui) {
+        let (icon, name) = if self.editor.is_some() {
+            ("SketcherWorkbench", "Sketcher")
+        } else if self.active_assembly().is_some() {
+            ("AssemblyWorkbench", "Assembly")
+        } else {
+            ("PartDesignWorkbench", "Part Design")
+        };
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(170.0, 24.0), egui::Sense::click());
+        crate::widgets::reg("workbench", rect);
         let y = rect.center().y;
         let p = ui.painter();
         p.rect(rect.shrink2(egui::vec2(0.0, 0.0)), 4.0, Color32::from_rgb(32, 32, 32), egui::Stroke::new(1.0, theme::BORDER), egui::StrokeKind::Inside);
@@ -266,7 +348,19 @@ impl App {
         p.text(egui::pos2(rect.left() + 28.0, y), Align2::LEFT_CENTER, name, egui::FontId::proportional(13.0), theme::TEXT);
         let c = egui::pos2(rect.right() - 12.0, y);
         p.add(egui::Shape::convex_polygon(vec![c + egui::vec2(-4.0, -2.0), c + egui::vec2(4.0, -2.0), c + egui::vec2(0.0, 2.5)], Color32::from_rgb(150, 150, 150), egui::Stroke::NONE));
-        resp.on_hover_ui(|ui| crate::widgets::tooltip(ui, "Workbench", "Switches with the task: Sketcher while a sketch is being edited, Part Design otherwise.", ""));
+        let resp = resp.on_hover_ui(|ui| crate::widgets::tooltip(ui, "Workbench", "Part Design edits parts, Assembly joins them. Sketcher is active while a sketch is being edited.", ""));
+        egui::Popup::menu(&resp).show(|ui| {
+            ui.set_min_width(170.0);
+            for asm in [false, true] {
+                let (icon, title, desc, _, en) = self.act_info(Act::Workbench(asm));
+                let r = ui.add_enabled(en, egui::Button::image_and_text(crate::icons::image(ui.ctx(), icon, 16.0), title).selected(self.active_assembly().is_some() == asm));
+                crate::widgets::reg(format!("wb:{title}"), r.rect);
+                if r.on_hover_text(desc).clicked() {
+                    self.run(Act::Workbench(asm));
+                    ui.close();
+                }
+            }
+        });
     }
 
     pub(super) fn toolbars(&mut self, ui: &mut egui::Ui) {
@@ -332,7 +426,34 @@ impl App {
         });
         ui.add_space(2.0);
         ui.horizontal_wrapped(|ui| {
-            if self.editor.is_some() {
+            if self.active_assembly().is_some() {
+                // FreeCAD's Assembly toolbar order
+                tb_grip(ui);
+                self.tb(ui, "newasm", Act::NewAssembly, false);
+                self.tb(ui, "insert", Act::AsmInsert, matches!(self.asm.task, Some(super::assembly::AsmTask::Insert { .. })));
+                self.tb(ui, "solve", Act::Solve, false);
+                tb_separator(ui);
+                tb_grip(ui);
+                self.tb(ui, "ground", Act::Ground, false);
+                for n in ["Fixed", "Revolute", "Cylindrical", "Slider", "Ball"] {
+                    self.tb(ui, &format!("joint:{}", n.to_lowercase()), Act::Joint(n), false);
+                }
+                tb_separator(ui);
+                tb_grip(ui);
+                for n in ["Distance", "Parallel", "Perpendicular", "Angle"] {
+                    self.tb(ui, &format!("joint:{}", n.to_lowercase()), Act::Joint(n), false);
+                }
+                tb_separator(ui);
+                tb_grip(ui);
+                for n in ["Planar", "PinSlot"] {
+                    self.tb(ui, &format!("joint:{}", n.to_lowercase()), Act::Joint(n), false);
+                }
+                self.tb(ui, "asmconnector", Act::AsmConnector, false);
+                tb_separator(ui);
+                tb_grip(ui);
+                self.tb(ui, "edit", Act::Edit, false);
+                self.tb(ui, "delete", Act::Delete, false);
+            } else if self.editor.is_some() {
                 tb_grip(ui);
                 self.tb(ui, "leave", Act::LeaveSketch, false);
                 self.tb(ui, "viewsketch", Act::ViewSketch, false);
@@ -344,7 +465,9 @@ impl App {
                 self.editor = ed;
             } else {
                 tb_grip(ui);
+                self.tb(ui, "part", Act::NewPart, false);
                 self.tb(ui, "sketch", Act::NewSketch, false);
+                self.tb(ui, "mate", Act::MateConnector, self.mate_task().is_some());
                 tb_separator(ui);
                 tb_grip(ui);
                 for (id, a) in [("pad", Act::Pad), ("revolution", Act::Revolution), ("addloft", Act::AddLoft), ("addpipe", Act::AddPipe)] {
@@ -363,19 +486,55 @@ impl App {
         });
     }
 
-    /// FreeCAD's document tab under the 3D view ("Unnamed : 1*").
+    /// FreeCAD's document tab under the 3D view ("Unnamed : 1*"), followed (once the
+    /// document has more than one part or an assembly) by Onshape-style tabs for its parts
+    /// and assemblies, and a "+" to add one.
     pub(super) fn doc_tabs(&mut self, ui: &mut egui::Ui) {
         let text = format!("{} : 1{}", self.doc_title(), if self.dirty { "*" } else { "" });
-        let g = ui.painter().layout_no_wrap(text.clone(), theme::bold_font(13.0), Color32::WHITE);
         let top = ui.max_rect().top();
-        let rect = egui::Rect::from_min_size(egui::pos2(ui.max_rect().left() + 2.0, top), egui::vec2(g.size().x + 40.0, 26.0));
-        let resp = ui.interact(rect, egui::Id::new("doc_tab"), egui::Sense::hover());
-        let p = ui.painter();
-        p.rect_filled(rect, egui::CornerRadius { nw: 0, ne: 0, sw: 4, se: 4 }, Color32::from_rgb(40, 40, 40));
-        p.line_segment([rect.left_top(), rect.right_top()], egui::Stroke::new(2.0, theme::ACCENT));
-        crate::icons::paint(p, "Document", egui::Rect::from_center_size(egui::pos2(rect.left() + 15.0, rect.center().y), egui::vec2(16.0, 16.0)), Color32::WHITE);
-        p.galley(egui::pos2(rect.left() + 30.0, rect.center().y - g.size().y * 0.5), g, Color32::WHITE);
-        resp.on_hover_text(self.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "Not saved yet".into()));
+        let mut x = ui.max_rect().left() + 2.0;
+        let tab = |ui: &mut egui::Ui, x: &mut f32, reg: &str, icon: &str, text: &str, active: bool, tip: &str| -> egui::Response {
+            let font = if active { theme::bold_font(13.0) } else { egui::FontId::proportional(13.0) };
+            let g = ui.painter().layout_no_wrap(text.to_string(), font, Color32::WHITE);
+            let rect = egui::Rect::from_min_size(egui::pos2(*x, top), egui::vec2(g.size().x + 40.0, 26.0));
+            *x = rect.right() + 2.0;
+            let resp = ui.interact(rect, egui::Id::new(("doc_tab", reg)), egui::Sense::click());
+            crate::widgets::reg(reg.to_string(), rect);
+            let p = ui.painter();
+            let fill = if active { Color32::from_rgb(40, 40, 40) } else if resp.hovered() { Color32::from_rgb(34, 34, 34) } else { Color32::from_rgb(28, 28, 28) };
+            p.rect_filled(rect, egui::CornerRadius { nw: 0, ne: 0, sw: 4, se: 4 }, fill);
+            if active {
+                p.line_segment([rect.left_top(), rect.right_top()], egui::Stroke::new(2.0, theme::ACCENT));
+            }
+            crate::icons::paint(p, icon, egui::Rect::from_center_size(egui::pos2(rect.left() + 15.0, rect.center().y), egui::vec2(16.0, 16.0)), Color32::WHITE);
+            p.galley(egui::pos2(rect.left() + 30.0, rect.center().y - g.size().y * 0.5), g, if active { Color32::WHITE } else { theme::TEXT_DIM });
+            resp.on_hover_text(tip)
+        };
+        let path_tip = self.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "Not saved yet".into());
+        tab(ui, &mut x, "doc_tab", "Document", &text, true, &path_tip);
+        let multi = self.ws.parts.len() > 1 || !self.ws.assemblies.is_empty();
+        if !multi {
+            return;
+        }
+        x += 10.0;
+        let items: Vec<(Tab, String)> = self.ws.parts.iter().map(|p| (Tab::Part(p.id), p.name.clone())).chain(self.ws.assemblies.iter().map(|a| (Tab::Assembly(a.id), a.name.clone()))).collect();
+        let mut go = None;
+        for (t, name) in items {
+            let icon = if matches!(t, Tab::Part(_)) { "PartDesign_Body" } else { "Geoassembly" };
+            let tip = if matches!(t, Tab::Part(_)) { format!("Part {name}: open in Part Design") } else { format!("Assembly {name}: open in the Assembly workbench") };
+            if tab(ui, &mut x, &format!("tab:{name}"), icon, &name, self.tab == t, &tip).clicked() {
+                go = Some(t);
+            }
+        }
+        let r = tab(ui, &mut x, "tab:+", "list-add", "", false, "Add a part or an assembly");
+        egui::Popup::menu(&r).show(|ui| {
+            ui.set_min_width(170.0);
+            self.menu_item(ui, Act::NewPart);
+            self.menu_item(ui, Act::NewAssembly);
+        });
+        if let Some(t) = go {
+            self.switch_tab(t);
+        }
     }
 
     pub(super) fn status_bar(&mut self, ui: &mut egui::Ui) {
@@ -471,6 +630,15 @@ impl App {
             }
             match k {
                 Key::V => self.chord = Some((k, now)),
+                Key::Escape if self.asm.task.is_some() => {
+                    self.asm_key(false);
+                }
+                Key::Enter if self.asm.task.is_some() => {
+                    self.asm_key(true);
+                }
+                Key::Delete | Key::Backspace if self.idle() && self.active_assembly().is_some() => self.asm_delete_selected(),
+                Key::G if self.idle() && self.active_assembly().is_some() => self.run(Act::Ground),
+                Key::I if self.idle() && self.active_assembly().is_some() => self.run(Act::AsmInsert),
                 Key::Escape if self.task.is_some() => self.task_cancel(),
                 Key::Escape if self.picking => {
                     self.end_plane_pick();

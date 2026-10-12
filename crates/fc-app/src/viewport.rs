@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------- public data
 
+#[derive(Clone)]
 pub struct SceneMesh {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
@@ -16,14 +17,18 @@ pub struct SceneMesh {
     pub tri_face: Vec<u32>,
 }
 /// polyline per B-rep edge
+#[derive(Clone)]
 pub struct SceneEdge {
     pub id: u32,
     pub points: Vec<[f32; 3]>,
 }
+#[derive(Clone)]
 pub struct SceneObject {
     pub name: String,
     pub mesh: SceneMesh,
     pub edges: Vec<SceneEdge>,
+    /// B-rep vertices (id = index; FreeCAD's Vertex<n> is id + 1). Pickable, drawn on hover.
+    pub vertices: Vec<[f32; 3]>,
     pub visible: bool,
     pub color: [f32; 4],
 }
@@ -81,6 +86,7 @@ const EDGE_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const EDGE_WIDTH: f32 = 1.5;
 const HL_EDGE_WIDTH: f32 = 3.5;
 const EDGE_PICK_PX: f64 = 5.0;
+const VERTEX_PICK_PX: f64 = 7.0;
 
 struct ObjCache {
     min: DVec3,
@@ -115,6 +121,8 @@ pub struct Viewport {
     pub instant: bool,
     /// Width (points) covered by the Tasks panel on the right: fits center in the rest.
     pub right_inset: f32,
+    /// The primary-button drag belongs to the app (e.g. dragging an assembly part): no orbit.
+    pub capture_primary: bool,
 }
 
 impl Viewport {
@@ -142,6 +150,7 @@ impl Viewport {
             anim: None,
             instant: false,
             right_inset: 0.0,
+            capture_primary: false,
         }
     }
 
@@ -153,6 +162,26 @@ impl Viewport {
     }
     pub fn set_perspective(&mut self, on: bool) {
         self.cam.perspective = on;
+    }
+    /// Recolor one object without re-uploading its geometry.
+    pub fn set_object_color(&mut self, i: usize, color: [f32; 4]) {
+        if let Some(o) = self.objects.get_mut(i) {
+            o.color = color;
+        }
+    }
+    /// Direction the camera looks along (world).
+    pub fn view_dir(&self) -> [f64; 3] {
+        self.cam.fwd().to_array()
+    }
+    /// What is under a screen point (same rules as hover picking).
+    pub fn pick(&self, pos: Pos2) -> Option<Pick> {
+        if !self.rect.contains(pos) {
+            return None;
+        }
+        self.pick_at(pos)
+    }
+    pub fn rect(&self) -> Rect {
+        self.rect
     }
 
     /// Replaces the scene and re-uploads GPU buffers.
@@ -566,6 +595,31 @@ impl Viewport {
                 }
             }
         }
+        // vertices win over edges and faces within a few pixels
+        let mut best_v: Option<(f64, usize, u32, DVec3)> = None;
+        for (oi, obj) in self.objects.iter().enumerate() {
+            if !obj.visible {
+                continue;
+            }
+            for (vi, v) in obj.vertices.iter().enumerate() {
+                let p3 = DVec3::new(v[0] as f64, v[1] as f64, v[2] as f64);
+                let Some(sp) = self.world_to_screen(p3.to_array()) else { continue };
+                let dist = (sp - pos).length() as f64;
+                if dist > VERTEX_PICK_PX || best_v.is_some_and(|b| dist >= b.0) {
+                    continue;
+                }
+                if let Some(fd) = face_depth {
+                    let tol = (6.0 / self.pixels_per_unit_at(p3.to_array())).max(1e-6);
+                    if (p3 - eye).dot(fwd) > fd + tol {
+                        continue;
+                    }
+                }
+                best_v = Some((dist, oi, vi as u32, p3));
+            }
+        }
+        if let Some((_, oi, id, p)) = best_v {
+            return Some(Pick { object: oi, kind: PickKind::Vertex, id, point: p.to_array() });
+        }
         if let Some((_, oi, id, p)) = best_e {
             return Some(Pick { object: oi, kind: PickKind::Edge, id, point: p.to_array() });
         }
@@ -610,14 +664,16 @@ impl Viewport {
     fn handle_input(&mut self, ui: &egui::Ui, resp: &egui::Response) {
         let mods = ui.input(|i| i.modifiers);
         let d = resp.drag_delta();
-        if d != Vec2::ZERO && !(self.sketch_mode && resp.dragged_by(egui::PointerButton::Primary)) {
+        if d != Vec2::ZERO && !((self.sketch_mode || self.capture_primary) && resp.dragged_by(egui::PointerButton::Primary)) {
             self.anim = None;
         }
         if d != Vec2::ZERO {
             let middle = resp.dragged_by(egui::PointerButton::Middle);
             let prim = resp.dragged_by(egui::PointerButton::Primary);
             let sec = resp.dragged_by(egui::PointerButton::Secondary);
-            if middle || (prim && mods.shift && !self.sketch_mode) {
+            if prim && self.capture_primary {
+                // the app moves something with the left button
+            } else if middle || (prim && mods.shift && !self.sketch_mode) {
                 self.pan(d.x, d.y);
             } else if self.sketch_mode && prim {
                 // left button belongs to the sketch editor

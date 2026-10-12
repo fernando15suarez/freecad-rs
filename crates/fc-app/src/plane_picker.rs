@@ -56,6 +56,7 @@ pub fn plane_objects(half: f64) -> Vec<SceneObject> {
                 name: p.name.to_string(),
                 mesh: SceneMesh { positions, normals, indices, tri_face: vec![0; 4] },
                 edges: vec![SceneEdge { id: 0, points: pts }],
+                vertices: vec![],
                 visible: true,
                 color: plane_color(i),
             }

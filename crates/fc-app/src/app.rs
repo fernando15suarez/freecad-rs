@@ -6,9 +6,14 @@
 //! - `tree.rs`: Model dock (tree, property grid, variables, measurements)
 //! - `tasks.rs`: Tasks panel (feature parameters, sketch attachment, sketch edit)
 
+mod assembly;
 mod chrome;
+mod mates;
 mod tasks;
 mod tree;
+pub mod workspace;
+
+use workspace::Tab;
 
 use crate::scene;
 use crate::sketcher::{EditorExit, SketchEditor};
@@ -103,7 +108,19 @@ struct FeatureTask {
 pub const ORIGIN_ITEMS: [(&str, &str); 6] = [("X_Axis", "Std_Axis"), ("Y_Axis", "Std_Axis"), ("Z_Axis", "Std_Axis"), ("XY_Plane", "Std_Plane"), ("XZ_Plane", "Std_Plane"), ("YZ_Plane", "Std_Plane")];
 
 pub struct App {
+    /// The open part's document (see `workspace.rs`); empty while an assembly is open.
     doc: Document,
+    /// All parts and assemblies of the document.
+    ws: fc_assembly::Workspace,
+    /// What the 3D view shows.
+    tab: Tab,
+    /// `doc` currently lives in `ws` (always true while an assembly is open).
+    doc_in_ws: bool,
+    /// The part last open in Part Design (the workbench switcher returns to it).
+    last_part: Option<fc_assembly::PartId>,
+    asm: assembly::AsmState,
+    /// Mate connector task: the hovered element and its snapped inference point.
+    mate_hover: Option<mates::MateHover>,
     meas_kind: MeasKind,
     meas_value_key: String,
     /// Signature of the open file as we last read or wrote it.
@@ -169,6 +186,7 @@ fn parse_pick(s: &str) -> Option<Pick> {
     let kind = match k {
         "face" => PickKind::Face,
         "edge" => PickKind::Edge,
+        "vertex" => PickKind::Vertex,
         _ => return None,
     };
     Some(Pick { object: 0, kind, id: id.parse().ok()?, point: [0.0; 3] })
@@ -213,8 +231,15 @@ impl App {
         crate::theme::apply(&cc.egui_ctx);
         let mut vp = Viewport::new(cc);
         vp.instant = screenshot.is_some() || std::env::var_os("FCRS_INPUT").is_some();
+        let (ws, first_part) = workspace::fresh_workspace();
         let mut app = App {
             doc: Document::new(),
+            ws,
+            tab: Tab::Part(first_part),
+            doc_in_ws: false,
+            last_part: None,
+            asm: assembly::AsmState::default(),
+            mate_hover: None,
             meas_kind: MeasKind::Volume,
             meas_value_key: String::new(),
             disk_sig: None,
@@ -259,6 +284,9 @@ impl App {
         } else if std::env::var_os("FCRS_DEMO").is_some() {
             app.doc = crate::demo::demo_document();
         }
+        if std::env::var_os("FCRS_ASM_DEMO").is_some() {
+            app.load_workspace(crate::demo::assembly_workspace(true));
+        }
         app.doc.recompute();
         app.rebuild_scene();
         let view = match std::env::var("FCRS_VIEW").as_deref() {
@@ -301,6 +329,10 @@ impl App {
     // ------------------------------------------------------------------ model ops
 
     fn rebuild_scene(&mut self) {
+        if self.active_assembly().is_some() {
+            self.rebuild_asm_scene();
+            return;
+        }
         let mut objs = if !self.body_visible {
             vec![]
         } else if let Some(ed) = &self.editor {
@@ -358,7 +390,8 @@ impl App {
     }
 
     fn snapshot(&mut self) {
-        self.undo.push(self.doc.to_json());
+        let s = self.state_json();
+        self.undo.push(s);
         if self.undo.len() > 200 {
             self.undo.remove(0);
         }
@@ -385,27 +418,17 @@ impl App {
         }
     }
 
-    fn restore(&mut self, json: &str) {
-        if let Ok(d) = Document::from_json(json) {
-            self.doc = d;
-            self.doc.recompute();
-            self.tree_sel.retain(|id| self.doc.get(*id).is_some());
-            self.fields.clear();
-            self.rebuild_scene();
-        }
-    }
-
     fn can_undo(&self) -> bool {
         match &self.editor {
             Some(ed) => ed.can_undo(),
-            None => self.task.is_none() && !self.undo.is_empty(),
+            None => self.task.is_none() && self.asm.task.is_none() && !self.undo.is_empty(),
         }
     }
 
     fn can_redo(&self) -> bool {
         match &self.editor {
             Some(ed) => ed.can_redo(),
-            None => self.task.is_none() && !self.redo.is_empty(),
+            None => self.task.is_none() && self.asm.task.is_none() && !self.redo.is_empty(),
         }
     }
 
@@ -414,11 +437,12 @@ impl App {
             ed.undo(&mut self.doc);
             return;
         }
-        if self.task.is_some() {
+        if self.task.is_some() || self.asm.task.is_some() {
             return;
         }
         if let Some(prev) = self.undo.pop() {
-            self.redo.push(self.doc.to_json());
+            let cur = self.state_json();
+            self.redo.push(cur);
             self.restore(&prev);
             self.status = "Undo".into();
         }
@@ -429,11 +453,12 @@ impl App {
             ed.redo(&mut self.doc);
             return;
         }
-        if self.task.is_some() {
+        if self.task.is_some() || self.asm.task.is_some() {
             return;
         }
         if let Some(next) = self.redo.pop() {
-            self.undo.push(self.doc.to_json());
+            let cur = self.state_json();
+            self.undo.push(cur);
             self.restore(&next);
             self.status = "Redo".into();
         }
@@ -441,7 +466,7 @@ impl App {
 
     /// No dialog, sketch edit or task running: Part Design commands are available.
     fn idle(&self) -> bool {
-        self.editor.is_none() && self.task.is_none() && !self.picking
+        self.editor.is_none() && self.task.is_none() && !self.picking && self.asm.task.is_none() && self.asm.drag.is_none()
     }
 
     /// The feature whose output is the current body solid (for sketch-on-face references).
@@ -589,9 +614,9 @@ impl App {
 
     /// Double-click / "Edit": sketches open the sketcher, features their task panel.
     fn edit_feature(&mut self, id: FeatureId) {
-        match self.doc.get(id).map(|f| f.kind.is_solid_feature()) {
-            Some(true) => self.open_task(id, false),
-            Some(false) => self.start_edit(id),
+        match self.doc.get(id).map(|f| matches!(f.kind, FeatureKind::Sketch(_))) {
+            Some(false) => self.open_task(id, false),
+            Some(true) => self.start_edit(id),
             None => {}
         }
     }
@@ -704,7 +729,7 @@ impl App {
     fn task_ok(&mut self) {
         self.commit_focused_field();
         let Some(t) = self.task.take() else { return };
-        if !t.created && self.doc.to_json() == t.before {
+        if !t.created && self.state_json() == t.before {
             self.undo.pop();
         }
         self.fields.clear();
@@ -745,7 +770,7 @@ impl App {
     }
 
     fn try_delete(&mut self, what: DeleteWhat, policy: OnUsers) {
-        let before = self.doc.to_json();
+        let before = self.state_json();
         let res = match &what {
             DeleteWhat::Feature(id) => self.doc.delete_feature(*id, policy),
             DeleteWhat::Param(n) => self.doc.remove_parameter(n, policy),
@@ -782,10 +807,8 @@ impl App {
 
     fn new_document(&mut self) {
         self.snapshot();
-        self.doc = Document::new();
+        self.load_workspace(workspace::fresh_workspace().0);
         self.path = None;
-        self.tree_sel.clear();
-        self.origin_sel = None;
         self.after_change();
         self.dirty = false;
         self.vp.set_standard_view(StandardView::Isometric);
@@ -799,6 +822,28 @@ impl App {
 
     fn open_path(&mut self, p: PathBuf) {
         let is_fcstd = p.extension().is_some_and(|e| e.eq_ignore_ascii_case("fcstd"));
+        // FreeCAD assemblies (and the bodies they use) open as a workspace; v2 .fcrs too
+        let ws = if is_fcstd {
+            self.import_fcstd_assembly(&p)
+        } else {
+            std::fs::read_to_string(&p).ok().map(|s| fc_assembly::Workspace::from_json(&s).map_err(|e| e.to_string()))
+        };
+        if let Some(ws) = ws {
+            match ws {
+                Ok(ws) => {
+                    self.load_workspace(ws);
+                    self.disk_sig = if is_fcstd { None } else { file_sig(&p) };
+                    self.disk_changed = false;
+                    self.path = Some(if is_fcstd { p.with_extension("fcrs") } else { p });
+                    self.dirty = is_fcstd;
+                    self.undo.clear();
+                    self.redo.clear();
+                    self.vp.fit_all();
+                }
+                Err(e) => self.dialog = Some(Dialog::Message(format!("Could not open {}: {e}", p.display()))),
+            }
+            return;
+        }
         let loaded = if is_fcstd {
             fc_part::fcstd::import_with_report(&p).map_err(|e| e.to_string()).map(|(d, rep)| {
                 let skipped: Vec<String> = rep.notes.iter().filter(|n| !matches!(n.kind, fc_part::fcstd::NoteKind::Info)).map(|n| format!("{}: {}", n.object, n.message)).collect();
@@ -812,8 +857,9 @@ impl App {
         };
         match loaded {
             Ok(d) => {
-                self.doc = d;
-                self.doc.recompute();
+                let mut ws = fc_assembly::Workspace::new();
+                ws.add_part("Body", d);
+                self.load_workspace(ws);
                 // FreeCAD files are imported; saving writes a .fcrs next to them.
                 self.disk_sig = if is_fcstd { None } else { file_sig(&p) };
                 self.disk_changed = false;
@@ -833,13 +879,20 @@ impl App {
     fn reload_from_disk(&mut self) {
         let Some(p) = self.path.clone() else { return };
         let sig = file_sig(&p);
-        match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| Document::from_json(&s).map_err(|e| e.to_string())) {
-            Ok(d) => {
+        match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| fc_assembly::Workspace::from_json(&s).map_err(|e| e.to_string())) {
+            Ok(ws) => {
                 self.editor = None;
                 self.task = None;
+                self.asm.task = None;
                 self.snapshot();
-                self.doc = d;
-                self.doc.recompute();
+                let tab = self.tab;
+                self.load_workspace(ws);
+                if self.ws.part(match tab { Tab::Part(p) => p, _ => u32::MAX }).is_some() || self.ws.assembly(match tab { Tab::Assembly(a) => a, _ => u32::MAX }).is_some() {
+                    self.park();
+                    self.tab = tab;
+                    self.unpark();
+                    self.solve_active(false);
+                }
                 self.dirty = false;
                 self.disk_sig = sig;
                 self.disk_changed = false;
@@ -869,7 +922,7 @@ impl App {
         if self.disk_sig == Some(now) || self.disk_changed {
             return;
         }
-        if self.dirty || self.editor.is_some() || self.task.is_some() {
+        if self.dirty || self.editor.is_some() || self.task.is_some() || self.asm.task.is_some() {
             self.disk_changed = true;
         } else {
             self.reload_from_disk();
@@ -899,7 +952,8 @@ impl App {
             _ => rfd::FileDialog::new().add_filter("freecad-rs document", &["fcrs"]).set_file_name("Unnamed.fcrs").save_file(),
         };
         if let Some(p) = path {
-            match std::fs::write(&p, self.doc.to_json()) {
+            let json = self.save_json();
+            match std::fs::write(&p, json) {
                 Ok(()) => {
                     self.status = format!("Saved {}", p.display());
                     self.disk_sig = file_sig(&p);
@@ -1048,7 +1102,7 @@ impl App {
         let mut refs = Vec::new();
         parsed.refs(&mut refs);
         refs.retain(|r| r != "pi" && r != "e");
-        let before = self.doc.to_json();
+        let before = self.state_json();
         let result = if text.starts_with('=') || !refs.is_empty() {
             self.doc.set_expression(canon, &src).map_err(|e| e.to_string())
         } else {
@@ -1063,7 +1117,7 @@ impl App {
         };
         match result {
             Ok(()) => {
-                if self.doc.to_json() == before {
+                if self.state_json() == before {
                     return false;
                 }
                 if self.task.is_none() {
@@ -1123,7 +1177,7 @@ impl App {
             name = format!("{base}{n}");
             n += 1;
         }
-        let before = self.doc.to_json();
+        let before = self.state_json();
         match self.doc.set_measurement(&name, spec) {
             Ok(()) => {
                 self.undo.push(before);
@@ -1251,6 +1305,14 @@ impl App {
                 moved(&mut run, p, "world point");
             }
             Step::AtScreen(x, y) => moved(&mut run, Some(egui::pos2(x, y)), "screen point"),
+            Step::AtTriad(name) => {
+                let p = self.triad_screen(&name);
+                moved(&mut run, p, &format!("triad '{name}'"));
+            }
+            Step::AtInst(name, l) => {
+                let p = self.asm_ref().and_then(|a| a.instance_by_name(&name)).map(|i| i.placement.transform_point(l)).and_then(|w| self.vp.world_to_screen(w));
+                moved(&mut run, p, &format!("point of '{name}'"));
+            }
             Step::AtUi(name) => {
                 let p = widgets::lookup(&name).map(|r| r.center());
                 moved(&mut run, p, &format!("ui '{name}'"));
@@ -1288,10 +1350,63 @@ impl App {
             Step::Wait(n) => run.wait = n,
             Step::Expect(what, val) => {
                 let got = match what.as_str() {
+                    "dof" if self.active_assembly().is_some() => self.asm.report.as_ref().map(|r| r.dof.to_string()),
                     "dof" => self.editor.as_ref().and_then(|e| self.doc.get(e.feature())).and_then(|f| match &f.kind {
                         FeatureKind::Sketch(s) => Some(s.sketch.diagnose().dof.to_string()),
                         _ => None,
                     }),
+                    "asmtask" => Some(self.asm.task.is_some().to_string()),
+                    "tab" => Some(match self.tab {
+                        Tab::Part(p) => format!("part {}", self.part_name(p)),
+                        Tab::Assembly(a) => format!("assembly {}", self.ws.assembly(a).map(|x| x.name.clone()).unwrap_or_default()),
+                    }),
+                    "instances" => self.asm_ref().map(|a| a.instances.len().to_string()),
+                    "joints" => self.asm_ref().map(|a| a.joints.len().to_string()),
+                    "joint" => self.asm_ref().map(|a| a.joints.iter().map(|j| format!("{} {}", j.kind.type_name(), j.name)).collect::<Vec<_>>().join(", ")).map(|s| if s.split(", ").any(|x| x == val) { val.clone() } else { s }),
+                    "grounded" => {
+                        let (n, want) = val.split_once(' ').unwrap_or((&val, "true"));
+                        self.asm_ref().and_then(|a| a.instance_by_name(n)).map(|i| if i.grounded.to_string() == want { val.clone() } else { format!("{n} {}", i.grounded) })
+                    }
+                    "solved" => self.asm.report.as_ref().map(|r| (r.ok() && r.unsatisfied_joints.is_empty()).to_string()),
+                    "moved" => {
+                        let (n, want) = val.split_once(' ').unwrap_or((&val, "true"));
+                        let cur = self.asm_ref().and_then(|a| a.instance_by_name(n)).map(|i| i.placement);
+                        let old = run.marks.get(n).copied();
+                        cur.zip(old).map(|(c, o)| {
+                            let (d, r) = c.distance_to(&o);
+                            let moved = d > 1e-3 || r > 1e-3;
+                            if moved.to_string() == want { val.clone() } else { format!("{n} {moved} (moved {d:.4} mm, turned {:.3}°)", r.to_degrees()) }
+                        })
+                    }
+                    "fixed_point" => {
+                        // NAME X Y Z: that local point of the instance did not move since `mark`
+                        let w: Vec<&str> = val.split_whitespace().collect();
+                        let n = w.first().copied().unwrap_or("");
+                        let lp: Vec<f64> = w[1..].iter().filter_map(|x| x.parse().ok()).collect();
+                        let cur = self.asm_ref().and_then(|a| a.instance_by_name(n)).map(|i| i.placement);
+                        let old = run.marks.get(n).copied();
+                        cur.zip(old).filter(|_| lp.len() == 3).map(|(c, o)| {
+                            let l = [lp[0], lp[1], lp[2]];
+                            let d = fc_part::placement::norm(fc_part::placement::sub(c.transform_point(l), o.transform_point(l)));
+                            if d < 1e-4 { val.clone() } else { format!("moved by {d:.5} mm") }
+                        })
+                    }
+                    "connector" => {
+                        // NAME X Y Z: origin of a part mate connector (Part Design)
+                        let w: Vec<&str> = val.split_whitespace().collect();
+                        let v: Vec<f64> = w[1..].iter().filter_map(|x| x.parse().ok()).collect();
+                        self.doc.by_name(w.first().copied().unwrap_or("")).and_then(|f| self.doc.connector_frame(f.id).ok()).map(|f| {
+                            let ok = v.len() == 3 && (0..3).all(|i| (f.origin[i] - v[i]).abs() < 1e-6);
+                            if ok { val.clone() } else { format!("{:?} z={:?}", f.origin, f.z) }
+                        })
+                    }
+                    "anchor" => self.doc.by_name(&val).or_else(|| self.doc.features.iter().rev().find(|f| matches!(f.kind, FeatureKind::MateConnector(_)))).and_then(|f| match &f.kind {
+                        FeatureKind::MateConnector(m) => Some(match &m.anchor {
+                            fc_part::Anchor::Origin => "Origin".to_string(),
+                            fc_part::Anchor::Topo { at, infer } => format!("{} {infer:?}", at.name()),
+                        }),
+                        _ => None,
+                    }).map(|s| if s.starts_with(&val) { val.clone() } else { s }),
                     "editing" => Some(self.editor.is_some().to_string()),
                     "task" => Some(self.task.is_some().to_string()),
                     "picking" => Some(self.picking.to_string()),
@@ -1339,6 +1454,16 @@ impl App {
                 }
             }
             Step::Do(cmd, arg) => match cmd.as_str() {
+                "asmdemo" => {
+                    self.load_workspace(crate::demo::assembly_workspace(false));
+                    self.path = None;
+                    self.dirty = false;
+                    self.undo.clear();
+                    self.vp.set_standard_view(StandardView::Isometric);
+                }
+                "mark" => {
+                    run.marks = self.asm_ref().map(|a| a.instances.iter().map(|i| (i.name.clone(), i.placement)).collect()).unwrap_or_default();
+                }
                 "demo" => {
                     self.doc = crate::demo::demo_document();
                     self.path = None;
@@ -1348,7 +1473,8 @@ impl App {
                 }
                 "saveto" => {
                     let p = PathBuf::from(&arg);
-                    if std::fs::write(&p, self.doc.to_json()).is_ok() {
+                    let json = self.save_json();
+                    if std::fs::write(&p, json).is_ok() {
                         self.path = Some(p.clone());
                         self.disk_sig = file_sig(&p);
                         self.dirty = false;
@@ -1425,6 +1551,10 @@ impl App {
 impl App {
     /// Mouse interaction with the 3D view for the current mode.
     fn view_input(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, r: &crate::viewport::ViewportResponse) {
+        if self.active_assembly().is_some() {
+            self.asm_view_input(ui, ctx, r);
+            return;
+        }
         if let Some(mut ed) = self.editor.take() {
             ed.handle_viewport(&mut self.doc, &mut self.vp, r, ctx);
             self.editor = Some(ed);
@@ -1440,9 +1570,13 @@ impl App {
         if self.show_origin {
             self.draw_plane_labels(ui, ctx);
         }
+        if self.mate_view_input(ui, ctx, r) {
+            return;
+        }
         if r.response.clicked() {
             self.view_clicked(ctx, r.clicked.clone());
         }
+        self.draw_part_connectors(ui);
     }
 }
 
@@ -1479,10 +1613,13 @@ impl eframe::App for App {
             .frame(egui::Frame::new().fill(crate::theme::PANEL).inner_margin(egui::Margin { left: 0, right: 2, top: 0, bottom: 0 }))
             .show(ui, |ui| self.model_dock(ui));
 
-        let task_open = self.editor.is_some() || self.task.is_some() || self.picking;
+        let task_open = self.editor.is_some() || self.task.is_some() || self.picking || self.active_assembly().is_some();
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
             egui::Panel::bottom("doc_tabs").exact_size(28.0).frame(egui::Frame::new().fill(crate::theme::WINDOW)).show(ui, |ui| self.doc_tabs(ui));
             self.vp.right_inset = if task_open { tasks::TASK_W } else { 0.0 };
+            if self.active_assembly().is_some() {
+                self.asm_pre_view(ctx);
+            }
             let r = self.vp.ui(ui);
             self.view_rect = r.response.rect;
             self.hovered = r.hovered.clone();

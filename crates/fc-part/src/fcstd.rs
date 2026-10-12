@@ -145,6 +145,19 @@ pub fn import_bytes(bytes: &[u8]) -> Result<(Document, ImportReport), ImportErro
 
 /// Import from the text of a FreeCAD `Document.xml`.
 pub fn import_document_xml(text: &str) -> Result<(Document, ImportReport), ImportError> {
+    import_body_xml(text, None)
+}
+
+/// Names of the PartDesign Bodies in a `Document.xml`, in document order.
+pub fn body_names(text: &str) -> Result<Vec<String>, ImportError> {
+    let opts = roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
+    let x = roxmltree::Document::parse_with_options(text, opts).map_err(|e| ImportError::Xml(e.to_string()))?;
+    let (order, objs) = xml::read_objects(x.root_element());
+    Ok(order.iter().filter(|n| objs[*n].ty == "PartDesign::Body").cloned().collect())
+}
+
+/// Import one Body (by object name; `None` = the first) from the text of a `Document.xml`.
+pub fn import_body_xml(text: &str, body: Option<&str>) -> Result<(Document, ImportReport), ImportError> {
     let opts = roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
     let x = roxmltree::Document::parse_with_options(text, opts).map_err(|e| ImportError::Xml(e.to_string()))?;
     let root = x.root_element();
@@ -153,7 +166,10 @@ pub fn import_document_xml(text: &str) -> Result<(Document, ImportReport), Impor
     }
     let (order, objs) = xml::read_objects(root);
     let bodies: Vec<&String> = order.iter().filter(|n| objs[*n].ty == "PartDesign::Body").collect();
-    let body_name = bodies.first().ok_or(ImportError::NoBody)?.to_string();
+    let body_name = match body {
+        Some(n) => bodies.iter().find(|b| b.as_str() == n).ok_or(ImportError::NoBody)?.to_string(),
+        None => bodies.first().ok_or(ImportError::NoBody)?.to_string(),
+    };
     let mut imp = Importer {
         objs: &objs,
         doc: Document::new(),
@@ -170,7 +186,7 @@ pub fn import_document_xml(text: &str) -> Result<(Document, ImportReport), Impor
         other_bodies: bodies.iter().skip(1).map(|s| s.to_string()).collect(),
         ..Default::default()
     };
-    if !report.other_bodies.is_empty() {
+    if body.is_none() && !report.other_bodies.is_empty() {
         imp.notes.push(&body_name, NoteKind::Skipped, format!("only the first Body is imported; skipped {:?}", report.other_bodies));
     }
     let body = &objs[&body_name];

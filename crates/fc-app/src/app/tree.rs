@@ -9,11 +9,38 @@ use egui::{Color32, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 
 /// What happened on a tree row this frame.
 #[derive(Default)]
-struct RowOut {
-    clicked: bool,
-    double: bool,
-    eye: bool,
-    expand: bool,
+pub(super) struct RowOut {
+    pub clicked: bool,
+    pub double: bool,
+    pub eye: bool,
+    pub expand: bool,
+}
+
+/// A tree row for other modules (assembly items): the response is returned for menus.
+pub(super) struct RowSpecPub<'a> {
+    pub reg: String,
+    pub depth: usize,
+    pub expander: Option<bool>,
+    pub eye: Option<bool>,
+    pub icon: &'a str,
+    pub badge: Option<&'a str>,
+    pub label: RichText,
+    pub selected: bool,
+    pub tip: String,
+}
+
+pub(super) struct RowOutPub {
+    pub clicked: bool,
+    pub double: bool,
+    pub eye: bool,
+    pub expand: bool,
+    pub resp: egui::Response,
+}
+
+pub(super) fn tree_row_pub(ui: &mut egui::Ui, s: RowSpecPub) -> RowOutPub {
+    let mut resp = None;
+    let o = tree_row_ex(ui, RowSpec { reg: s.reg, depth: s.depth, expander: s.expander, eye: s.eye, eye_space: true, icon: s.icon, badge: s.badge, label: s.label, selected: s.selected, tip: s.tip }, None, Some(&mut resp));
+    RowOutPub { clicked: o.clicked, double: o.double, eye: o.eye, expand: o.expand, resp: resp.unwrap() }
 }
 
 struct RowSpec<'a> {
@@ -35,6 +62,10 @@ struct RowSpec<'a> {
 const INDENT: f32 = 16.0;
 
 fn tree_row(ui: &mut egui::Ui, s: RowSpec, menu: Option<&mut dyn FnMut(&mut egui::Ui)>) -> RowOut {
+    tree_row_ex(ui, s, menu, None)
+}
+
+fn tree_row_ex(ui: &mut egui::Ui, s: RowSpec, menu: Option<&mut dyn FnMut(&mut egui::Ui)>, out_resp: Option<&mut Option<egui::Response>>) -> RowOut {
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 22.0), Sense::click());
     widgets::reg(s.reg.clone(), rect);
@@ -87,14 +118,17 @@ fn tree_row(ui: &mut egui::Ui, s: RowSpec, menu: Option<&mut dyn FnMut(&mut egui
     }
     out.double = resp.double_clicked();
     out.clicked = resp.clicked() && !out.eye && !out.expand;
+    if let Some(r) = out_resp {
+        *r = Some(resp);
+    }
     out
 }
 
-fn is_open(ui: &egui::Ui, key: &str, default: bool) -> bool {
+pub(super) fn is_open(ui: &egui::Ui, key: &str, default: bool) -> bool {
     ui.data(|d| d.get_temp::<bool>(egui::Id::new(("tree_open", key)))).unwrap_or(default)
 }
 
-fn toggle_open(ui: &egui::Ui, key: &str, default: bool) {
+pub(super) fn toggle_open(ui: &egui::Ui, key: &str, default: bool) {
     let v = !is_open(ui, key, default);
     ui.data_mut(|d| d.insert_temp(egui::Id::new(("tree_open", key)), v));
 }
@@ -110,6 +144,7 @@ enum TreeAct {
     Delete(FeatureId),
     Suppress(FeatureId),
     Tip(FeatureId),
+    OpenPart(fc_assembly::PartId),
 }
 
 impl App {
@@ -156,6 +191,13 @@ impl App {
                             ui.label(RichText::new("Properties return when the task is closed").color(theme::TEXT_DIM));
                         });
                     }
+                    _ if self.asm.task.is_some() => {
+                        ui.add_space(12.0);
+                        ui.vertical_centered(|ui| {
+                            ui.label(RichText::new("Editing in the Tasks panel").color(Color32::from_gray(170)).font(theme::bold_font(13.0)));
+                        });
+                    }
+                    _ if self.active_assembly().is_some() => self.asm_data_tab(ui),
                     _ => self.data_tab(ui),
                 }
             });
@@ -167,8 +209,32 @@ impl App {
         let mut acts: Vec<TreeAct> = vec![];
         let title = self.doc_title();
         tree_row(ui, RowSpec { reg: "tree:document".into(), depth: 0, expander: Some(true), eye: None, eye_space: false, icon: "Document", badge: None, label: RichText::new(title).font(theme::bold_font(13.0)), selected: false, tip: self.path.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "Not saved yet".into()) }, None);
+        let parts: Vec<(fc_assembly::PartId, String)> = self.ws.parts.iter().map(|p| (p.id, p.name.clone())).collect();
+        let several = parts.len() > 1 || !self.ws.assemblies.is_empty();
+        let all_idle = self.idle();
+        for (pid, pname) in parts {
+            if self.active_part() == Some(pid) {
+                self.body_tree(ui, &pname, several, interactive, &mut acts);
+                continue;
+            }
+            // another part: a closed Body row; double-click opens it in Part Design
+            let n = self.ws.part(pid).map(|p| p.doc.features.len()).unwrap_or(0);
+            let r = tree_row(ui, RowSpec { reg: format!("tree:{pname}"), depth: 1, expander: Some(false), eye: None, eye_space: true, icon: "PartDesign_Body", badge: None, label: RichText::new(&pname), selected: false, tip: format!("{pname}: part with {n} features\nDouble-click to open it in Part Design") }, None);
+            if (r.double || r.expand) && all_idle {
+                acts.push(TreeAct::OpenPart(pid));
+            }
+        }
+        let asms: Vec<fc_assembly::AssemblyId> = self.ws.assemblies.iter().map(|a| a.id).collect();
+        for a in asms {
+            self.assembly_tree_rows(ui, a, 1, all_idle || self.asm.task.is_none() && self.task.is_none() && self.editor.is_none());
+        }
+        self.tree_acts(ui, acts, interactive);
+    }
+
+    fn body_tree(&mut self, ui: &mut egui::Ui, name: &str, several: bool, interactive: bool, acts: &mut Vec<TreeAct>) {
         let body_open = is_open(ui, "body", true);
-        let r = tree_row(ui, RowSpec { reg: "tree:Body".into(), depth: 1, expander: Some(body_open), eye: Some(self.body_visible), eye_space: true, icon: "PartDesign_Body", badge: None, label: RichText::new("Body"), selected: false, tip: "Body: the solid built by the features below, in order".into() }, None);
+        let label = if several { RichText::new(name).font(theme::bold_font(13.0)) } else { RichText::new(name) };
+        let r = tree_row(ui, RowSpec { reg: "tree:Body".into(), depth: 1, expander: Some(body_open), eye: Some(self.body_visible), eye_space: true, icon: "PartDesign_Body", badge: None, label, selected: false, tip: format!("{name}: the solid built by the features below, in order{}", if several { "\nThe active part (open in Part Design)" } else { "" }) }, None);
         if r.expand {
             toggle_open(ui, "body", true);
         }
@@ -216,23 +282,27 @@ impl App {
                 let key = format!("feat{id}");
                 // a selected (or edited) consumed sketch shows its parent expanded
                 let open = has_children && (is_open(ui, &key, false) || inputs.iter().any(|i| self.tree_sel.contains(i)));
-                let r = self.feature_row(ui, id, 2, if has_children { Some(open) } else { None }, tip_solid, &consumed, interactive, &mut acts);
+                let r = self.feature_row(ui, id, 2, if has_children { Some(open) } else { None }, tip_solid, &consumed, interactive, acts);
                 if r.expand {
                     toggle_open(ui, &key, false);
                 }
                 if open {
                     for i in inputs {
-                        self.feature_row(ui, i, 3, None, tip_solid, &consumed, interactive, &mut acts);
+                        self.feature_row(ui, i, 3, None, tip_solid, &consumed, interactive, acts);
                     }
                 }
             }
         }
+    }
+
+    fn tree_acts(&mut self, ui: &mut egui::Ui, acts: Vec<TreeAct>, interactive: bool) {
         // empty area below the rows clears the selection
         let rest = ui.available_rect_before_wrap();
         if rest.height() > 4.0 && interactive {
             let r = ui.interact(rest, ui.id().with("tree_empty"), Sense::click());
             if r.clicked() {
                 self.tree_sel.clear();
+                self.asm.sel.clear();
                 self.origin_sel = None;
                 self.fields.clear();
                 self.rebuild_scene();
@@ -287,6 +357,7 @@ impl App {
                 TreeAct::Delete(id) => self.try_delete(DeleteWhat::Feature(id), OnUsers::Refuse),
                 TreeAct::Suppress(id) => self.toggle_suppressed(id),
                 TreeAct::Tip(id) => self.toggle_tip(id),
+                TreeAct::OpenPart(p) => self.switch_tab(super::workspace::Tab::Part(p)),
             }
         }
     }
@@ -544,7 +615,7 @@ impl App {
         if add && !self.new_param.0.trim().is_empty() {
             let (n, v) = (self.new_param.0.trim().to_string(), self.new_param.1.trim().to_string());
             let v = if v.is_empty() { "0".to_string() } else { v };
-            let before = self.doc.to_json();
+            let before = self.state_json();
             match self.doc.set_parameter(&n, &v) {
                 Ok(()) => {
                     self.undo.push(before);
@@ -555,7 +626,7 @@ impl App {
             }
         }
         if let Some((k, v)) = edit {
-            let before = self.doc.to_json();
+            let before = self.state_json();
             match self.doc.set_parameter(&k, &v) {
                 Ok(()) => {
                     self.undo.push(before);
@@ -623,7 +694,7 @@ impl App {
             );
         }
         if let Some((from, to)) = rename {
-            let before = self.doc.to_json();
+            let before = self.state_json();
             match self.doc.rename_measurement(&from, &to) {
                 Ok(()) => {
                     self.undo.push(before);

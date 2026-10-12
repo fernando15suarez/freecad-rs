@@ -6,7 +6,7 @@ cargo build --release -p fc-app
 APP=out/freecad-rs.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
-cp target/release/freecad-rs "$APP/Contents/MacOS/freecad-rs"
+cp "${CARGO_TARGET_DIR:-target}/release/freecad-rs" "$APP/Contents/MacOS/freecad-rs"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

@@ -1,5 +1,6 @@
 These SVG icons are copied unmodified from FreeCAD (https://github.com/FreeCAD/FreeCAD):
-  src/Gui/Icons, src/Mod/PartDesign/Gui/Resources/icons, src/Mod/Sketcher/Gui/Resources/icons.
+  src/Gui/Icons, src/Mod/PartDesign/Gui/Resources/icons, src/Mod/Sketcher/Gui/Resources/icons,
+  src/Mod/Assembly/Gui/Resources/icons (Assembly_*, AssemblyWorkbench), src/Mod/PartDesign (PartDesign_CoordinateSystem).
 They are Copyright (c) the FreeCAD contributors and are distributed under the GNU Lesser
 General Public License, version 2.1 or (at your option) any later version (LGPL-2.1-or-later),
 the same license as FreeCAD itself. See https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
