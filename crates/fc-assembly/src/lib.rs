@@ -6,20 +6,29 @@
 //! Reference behaviour: FreeCAD 1.1's Assembly workbench (Ondsel solver) and Onshape's
 //! mates on mate connectors. See `docs/assembly.md` for the parity results.
 
+pub mod bom;
 pub mod dual;
+pub mod export;
 pub mod fcstd;
 pub mod frame;
 pub mod geom;
+pub mod interference;
 pub mod joint;
 pub mod model;
 pub mod solver;
+pub mod structure;
 
+pub use bom::{bom_csv, BomItem, BomOptions, BomRow};
+pub use export::{StepExportOptions, StepExportStats, StepImport};
+pub use fc_occt::StepSchema;
 pub use frame::Frame;
+pub use interference::{Interference, InterferenceOptions};
+pub use structure::{InstancePath, LeafInstance};
 pub use geom::{infer_frame, ElementGeom, ImplicitPoint, RefKind};
 pub use joint::{DistanceMode, Joint, JointKind, JointRef, Limits, Sense};
 pub use model::{
-    box_elements, Assembly, AssemblyConnector, AssemblyId, ConnectorId, ExplodeStep, ExplodedView, Instance,
-    InstanceId, InstanceOf, JointId, MapResolver, NoGeometry, PartEntry, PartId, PartResolver, Workspace,
+    box_elements, Assembly, AssemblyConnector, AssemblyId, ConnectorId, ExplodeKind, ExplodeStep, Exploded, ExplodedView,
+    Instance, InstanceId, InstanceOf, JointId, MapResolver, NoGeometry, PartEntry, PartId, PartMeta, PartResolver, Workspace,
     WorkspaceError, WORKSPACE_VERSION,
 };
 pub use solver::{DragTarget, SolveError, SolveOptions, SolveReport, SolveStatus};
