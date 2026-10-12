@@ -160,11 +160,13 @@ void asm_write_step(AsmDoc &d, rust::Str path, int schema) {
     ASM_TRY
     quiet();
     d.shapes->UpdateAssemblies();
+    // The schema must be set before the writer creates its model (the header's FILE_SCHEMA).
+    STEPControl_Controller::Init();
+    Interface_Static::SetCVal("write.step.schema", schema == 242 ? "AP242DIS" : "AP214IS");
+    Interface_Static::SetCVal("write.step.unit", "MM");
     STEPCAFControl_Writer w;
     w.SetNameMode(Standard_True);
     w.SetColorMode(Standard_True);
-    Interface_Static::SetCVal("write.step.schema", schema == 242 ? "AP242DIS" : "AP214IS");
-    Interface_Static::SetCVal("write.step.unit", "MM");
     if (!w.Transfer(d.doc, STEPControl_AsIs)) throw std::runtime_error("STEP transfer failed");
     std::string p(path);
     if (w.Write(p.c_str()) != IFSelect_RetDone) throw std::runtime_error("STEP write failed: " + p);
