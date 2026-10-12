@@ -1,0 +1,45 @@
+{
+  "analysis_type": "static",
+  "case": "selfweight",
+  "dims": [
+    1000.0,
+    100.0,
+    100.0
+  ],
+  "fixed": [
+    "Face1"
+  ],
+  "freecad_version": "1.1.3",
+  "gravity": [
+    0,
+    0,
+    -1
+  ],
+  "material": "Steel-Generic",
+  "max_disp": 0.05821854072906361,
+  "max_disp_node": 45,
+  "max_disp_xyz": [
+    0.00384401,
+    0.00014931,
+    0.0580915
+  ],
+  "max_principal": 3.146461269286671,
+  "max_von_mises": 2.2790914229194494,
+  "max_von_mises_node": 2864,
+  "mesh": {
+    "max": 25.0,
+    "min": 0.0,
+    "order": 2
+  },
+  "min_disp_z": -0.0580915,
+  "min_principal": -3.0584908032131644,
+  "nodes": 6488,
+  "reactions": {
+    "CONSTRAINTFIXED": [
+      -3.563656e-10,
+      1.188443e-09,
+      771.9934
+    ]
+  },
+  "volume_elements": 3540
+}

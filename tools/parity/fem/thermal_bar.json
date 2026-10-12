@@ -1,0 +1,52 @@
+{
+  "analysis_type": "thermomech",
+  "case": "thermal_bar",
+  "fixed": [
+    "Face1"
+  ],
+  "freecad_version": "1.1.3",
+  "initial_temperature": 293.0,
+  "material": "Steel-Generic",
+  "max_disp": 0.06041054753500915,
+  "max_disp_node": 5,
+  "max_disp_xyz": [
+    0.0601116,
+    0.00600086,
+    0.00600076
+  ],
+  "max_principal": 6.330265479416977,
+  "max_temperature": 393.0,
+  "max_von_mises": 15.169692174028183,
+  "max_von_mises_node": 4,
+  "mesh": {
+    "max": 2.5,
+    "min": 0.0,
+    "order": 2
+  },
+  "min_disp_z": -0.0059993,
+  "min_principal": -20.568590855356632,
+  "min_temperature": 293.0,
+  "nodes": 6610,
+  "reactions": {
+    "CONSTRAINTFIXED": [
+      -7.225207e-10,
+      -9.24284e-11,
+      -7.645895e-11
+    ]
+  },
+  "temperatures": {
+    "cold": [
+      [
+        "Face1"
+      ],
+      293.0
+    ],
+    "hot": [
+      [
+        "Face2"
+      ],
+      393.0
+    ]
+  },
+  "volume_elements": 3589
+}

@@ -1,0 +1,36 @@
+{
+  "analysis_type": "frequency",
+  "case": "frequency",
+  "dims": [
+    1000.0,
+    100.0,
+    100.0
+  ],
+  "fixed": [
+    "Face1"
+  ],
+  "freecad_version": "1.1.3",
+  "frequencies": [
+    81.06915,
+    81.07278,
+    486.2201,
+    486.2432,
+    719.9123,
+    1261.8
+  ],
+  "material": "Steel-Generic",
+  "mesh": {
+    "max": 25.0,
+    "min": 0.0,
+    "order": 2
+  },
+  "nodes": 6488,
+  "reactions": {
+    "CONSTRAINTFIXED": [
+      15877770.0,
+      90.70475,
+      -589.9478
+    ]
+  },
+  "volume_elements": 3540
+}

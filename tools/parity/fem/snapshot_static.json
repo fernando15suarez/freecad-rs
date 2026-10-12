@@ -1,0 +1,36 @@
+{
+  "analysis_type": "static",
+  "case": "snapshot_static",
+  "freecad_version": "1.1.3",
+  "max_disp": 0.2539439427102958,
+  "max_disp_node": 5,
+  "max_disp_xyz": [
+    0.0338921,
+    0.0032785,
+    0.251673
+  ],
+  "max_principal": 237.38296277855545,
+  "max_von_mises": 171.2214637151762,
+  "max_von_mises_node": 305,
+  "mesh": {
+    "max": 10.0,
+    "min": 0.0,
+    "order": 2
+  },
+  "min_disp_z": -0.251673,
+  "min_principal": -250.89081352555016,
+  "nodes": 622,
+  "reactions": {
+    "CONSTRAINTDISPLACEMENT": [
+      -10.05335,
+      52.50972,
+      239.7159
+    ],
+    "CONSTRAINTFIXED": [
+      8.967618e-10,
+      -11.96506,
+      4458.442
+    ]
+  },
+  "volume_elements": 287
+}

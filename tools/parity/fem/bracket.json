@@ -1,0 +1,45 @@
+{
+  "analysis_type": "static",
+  "case": "bracket",
+  "fixed": [
+    "Face2"
+  ],
+  "force": 500.0,
+  "force_dir": [
+    0,
+    0,
+    -1
+  ],
+  "force_faces": [
+    "Face5"
+  ],
+  "freecad_version": "1.1.3",
+  "material": "Steel-Generic",
+  "max_disp": 0.12001451562115999,
+  "max_disp_node": 62,
+  "max_disp_xyz": [
+    0.0135206,
+    0.00112147,
+    0.119253
+  ],
+  "max_principal": 111.07132520373725,
+  "max_von_mises": 90.33599064026782,
+  "max_von_mises_node": 2628,
+  "mesh": {
+    "max": 4.0,
+    "min": 0.0,
+    "order": 2
+  },
+  "min_disp_z": -0.119253,
+  "min_principal": -91.40263810628652,
+  "nodes": 5776,
+  "reactions": {
+    "CONSTRAINTFIXED": [
+      4.638713e-10,
+      -2.088461e-10,
+      500.0
+    ]
+  },
+  "volume": 23851.68146928212,
+  "volume_elements": 3041
+}

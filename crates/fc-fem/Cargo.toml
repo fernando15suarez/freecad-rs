@@ -1,0 +1,16 @@
+[package]
+name = "fc-fem"
+version = "0.1.0"
+edition = "2021"
+license = "LGPL-2.1-or-later"
+description = "FEM (structural/modal/thermomechanical) analysis like FreeCAD's FEM workbench: Gmsh meshing + CalculiX solving"
+
+[dependencies]
+fc-occt = { path = "../fc-occt" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+fc-part = { path = "../fc-part" }
+fc-sketch = { path = "../fc-sketch" }

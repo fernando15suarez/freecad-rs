@@ -1,0 +1,33 @@
+{
+  "analysis_type": "thermomech",
+  "case": "snapshot_thermo",
+  "freecad_version": "1.1.3",
+  "max_disp": 0.0015096966066365785,
+  "max_disp_node": 6,
+  "max_disp_xyz": [
+    0.00148058,
+    0.000295219,
+    0.000297836
+  ],
+  "max_principal": 0.8914215738573756,
+  "max_temperature": 297.92,
+  "max_von_mises": 1.1460794281082225,
+  "max_von_mises_node": 3,
+  "mesh": {
+    "max": 5.0,
+    "min": 0.0,
+    "order": 2
+  },
+  "min_disp_z": -0.000292549,
+  "min_principal": -1.398576804495966,
+  "min_temperature": 293.0,
+  "nodes": 622,
+  "reactions": {
+    "CONSTRAINTFIXED": [
+      -7.1676e-13,
+      3.530842e-12,
+      1.226047e-12
+    ]
+  },
+  "volume_elements": 287
+}

@@ -1,0 +1,53 @@
+{
+  "analysis_type": "static",
+  "case": "plate_hole",
+  "fixed": [
+    "Face1"
+  ],
+  "force": 10000.0,
+  "force_dir": [
+    1,
+    0,
+    0
+  ],
+  "force_faces": [
+    "Face6"
+  ],
+  "freecad_version": "1.1.3",
+  "hole_faces": [
+    "Face7"
+  ],
+  "material": "Steel-Generic",
+  "max_disp": 0.010453793545895854,
+  "max_disp_node": 548,
+  "max_disp_xyz": [
+    0.0104535,
+    0.00104024,
+    0.00021948
+  ],
+  "max_principal": 32.92458660309747,
+  "max_von_mises": 32.00798926530264,
+  "max_von_mises_node": 16590,
+  "mesh": {
+    "max": 5.0,
+    "min": 0.0,
+    "order": 2,
+    "refine": {
+      "faces": [
+        "Face7"
+      ],
+      "size": 1.5
+    }
+  },
+  "min_disp_z": -0.000218916,
+  "min_principal": -12.501600541437238,
+  "nodes": 38875,
+  "reactions": {
+    "CONSTRAINTFIXED": [
+      -10000.0,
+      2.011848e-10,
+      -1.406431e-12
+    ]
+  },
+  "volume_elements": 22520
+}

@@ -1,0 +1,49 @@
+{
+  "analysis_type": "static",
+  "case": "cantilever",
+  "dims": [
+    1000.0,
+    100.0,
+    100.0
+  ],
+  "fixed": [
+    "Face1"
+  ],
+  "force": 1000.0,
+  "force_dir": [
+    -0.0,
+    -0.0,
+    -1.0
+  ],
+  "force_faces": [
+    "Face2"
+  ],
+  "freecad_version": "1.1.3",
+  "material": "Steel-Generic",
+  "max_disp": 0.20051742595931213,
+  "max_disp_node": 59,
+  "max_disp_xyz": [
+    0.0149411,
+    0.000412545,
+    0.19996
+  ],
+  "max_principal": 8.041360513844007,
+  "max_von_mises": 5.912231791258509,
+  "max_von_mises_node": 2823,
+  "mesh": {
+    "max": 25.0,
+    "min": 0.0,
+    "order": 2
+  },
+  "min_disp_z": -0.19996,
+  "min_principal": -7.772793254663517,
+  "nodes": 6488,
+  "reactions": {
+    "CONSTRAINTFIXED": [
+      -1.349861e-09,
+      3.987433e-09,
+      1000.0
+    ]
+  },
+  "volume_elements": 3540
+}
