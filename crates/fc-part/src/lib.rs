@@ -3,6 +3,7 @@
 
 pub mod expr;
 pub mod fcstd;
+pub mod mate;
 pub mod measure;
 pub mod params;
 pub mod placement;
@@ -10,6 +11,7 @@ pub mod profile;
 
 use fc_occt::Shape;
 use fc_sketch::{SolveReport, SolveStatus, Sketch};
+pub use mate::{Anchor, Frame, Infer, MateConnector, TopoKind, TopoRef};
 pub use placement::{Placement, V3};
 use placement::*;
 use serde::{Deserialize, Serialize};
@@ -31,6 +33,9 @@ pub enum PartError {
     Missing(String),
     #[error("{0}")]
     Invalid(String),
+    /// A reference (e.g. a mate connector's anchor) whose face/edge/vertex is gone.
+    #[error("dangling reference: {0}")]
+    Dangling(String),
 }
 impl From<fc_occt::OcctError> for PartError {
     fn from(e: fc_occt::OcctError) -> Self {
@@ -204,6 +209,8 @@ pub enum FeatureKind {
     AdditivePipe(Pipe),
     SubtractivePipe(Pipe),
     Hole(Hole),
+    /// A coordinate frame on the body (does not change the solid).
+    MateConnector(MateConnector),
 }
 
 impl FeatureKind {
@@ -219,6 +226,7 @@ impl FeatureKind {
             FeatureKind::AdditivePipe(_) => "AdditivePipe",
             FeatureKind::SubtractivePipe(_) => "SubtractivePipe",
             FeatureKind::Hole(_) => "Hole",
+            FeatureKind::MateConnector(_) => "MateConnector",
         }
     }
     /// Sketches this feature consumes (hidden under it in the tree, like FreeCAD).
@@ -235,10 +243,14 @@ impl FeatureKind {
             }
             FeatureKind::AdditivePipe(p) | FeatureKind::SubtractivePipe(p) => vec![p.profile, p.spine],
             FeatureKind::Hole(h) => vec![h.profile],
+            FeatureKind::MateConnector(m) => match &m.anchor {
+                Anchor::Topo { at, .. } => vec![at.feature],
+                Anchor::Origin => vec![],
+            },
         }
     }
     pub fn is_solid_feature(&self) -> bool {
-        !matches!(self, FeatureKind::Sketch(_))
+        !matches!(self, FeatureKind::Sketch(_) | FeatureKind::MateConnector(_))
     }
 }
 
@@ -265,6 +277,8 @@ pub struct FeatureState {
     pub error: Option<PartError>,
     /// Non-fatal problem (e.g. redundant sketch constraints), shown like FreeCAD's warning.
     pub warning: Option<String>,
+    /// Resolved frame in body coordinates (mate connectors only).
+    pub frame: Option<Frame>,
 }
 
 /// A PartDesign Body. Features are kept in tree order; the tip is the last solid feature
@@ -295,7 +309,7 @@ pub struct Document {
 
 impl Clone for FeatureState {
     fn clone(&self) -> Self {
-        FeatureState { shape: self.shape.clone(), tool: self.tool.clone(), placement: self.placement, solve: self.solve.clone(), error: self.error.clone(), warning: self.warning.clone() }
+        FeatureState { shape: self.shape.clone(), tool: self.tool.clone(), placement: self.placement, solve: self.solve.clone(), error: self.error.clone(), warning: self.warning.clone(), frame: self.frame }
     }
 }
 
@@ -533,6 +547,7 @@ impl Document {
                 st.tool = Some(tool);
                 Ok(())
             }
+            FeatureKind::MateConnector(mc) => self.compute_connector(i, &mc, states, st),
         }
     }
 

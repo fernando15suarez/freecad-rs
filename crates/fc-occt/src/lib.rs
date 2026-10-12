@@ -5,7 +5,7 @@
 pub mod ffi;
 
 use cxx::UniquePtr;
-pub use ffi::ffi::{FaceInfo, MeshData};
+pub use ffi::ffi::{EdgeInfo, FaceInfo, MeshData};
 use ffi::ffi as sys;
 use std::fmt;
 
@@ -98,6 +98,45 @@ impl Shape {
     }
     pub fn faces(&self) -> Vec<FaceInfo> {
         (1..=self.face_count()).filter_map(|i| self.face_info(i).ok()).collect()
+    }
+    pub fn vertex_count(&self) -> usize {
+        sys::count_vertices(self.r())
+    }
+    /// Edge by 1-based index (FreeCAD's `Edge<n>`).
+    pub fn edge_info(&self, index: usize) -> Result<EdgeInfo> {
+        Ok(sys::edge_info(self.r(), index)?)
+    }
+    pub fn edges(&self) -> Vec<EdgeInfo> {
+        (1..=self.edge_count()).filter_map(|i| self.edge_info(i).ok()).collect()
+    }
+    /// Vertex position by 1-based index (FreeCAD's `Vertex<n>`).
+    pub fn vertex_info(&self, index: usize) -> Result<P3> {
+        Ok(sys::vertex_info(self.r(), index)?)
+    }
+    pub fn vertices(&self) -> Vec<P3> {
+        (1..=self.vertex_count()).filter_map(|i| self.vertex_info(i).ok()).collect()
+    }
+    /// 1-based indices of the edges bounding Face<index>.
+    pub fn face_edges(&self, index: usize) -> Result<Vec<usize>> {
+        Ok(sys::face_edges(self.r(), index)?)
+    }
+    /// 1-based indices of the faces sharing Edge<index>.
+    pub fn edge_faces(&self, index: usize) -> Result<Vec<usize>> {
+        Ok(sys::edge_faces(self.r(), index)?)
+    }
+    /// 1-based indices of the faces touching Vertex<index>.
+    pub fn vertex_faces(&self, index: usize) -> Result<Vec<usize>> {
+        Ok(sys::vertex_faces(self.r(), index)?)
+    }
+    /// Axial extent [min, max] of a cylindrical/conical face along its axis
+    /// (`FaceInfo::normal`), measured from `FaceInfo::origin`.
+    pub fn face_axis_range(&self, index: usize) -> Result<[f64; 2]> {
+        Ok(sys::face_axis_range(self.r(), index)?)
+    }
+    /// Closest point on Face<index> to `p`, and the outward unit normal there.
+    pub fn face_point_normal(&self, index: usize, p: P3) -> Result<(P3, P3)> {
+        let r = sys::face_point_normal(self.r(), index, p)?;
+        Ok(([r[0], r[1], r[2]], [r[3], r[4], r[5]]))
     }
 
     pub fn prism(&self, d: P3) -> Result<Shape> {
@@ -263,6 +302,72 @@ mod tests {
         let back = Shape::read_step(step.to_str().unwrap()).unwrap();
         assert!((back.volume() - expect).abs() < 1e-2);
         assert!(std::fs::metadata(&stl).unwrap().len() > 1000);
+    }
+
+    #[test]
+    fn edges_vertices_and_axes() {
+        // 40x30x10 plate with a radius-5 through hole at (20, 15).
+        let mut b = ProfileBuilder::new();
+        b.begin_face();
+        let p = [[0.0, 0.0, 0.0], [40.0, 0.0, 0.0], [40.0, 30.0, 0.0], [0.0, 30.0, 0.0]];
+        for i in 0..4 {
+            b.line(p[i], p[(i + 1) % 4]).unwrap();
+        }
+        b.end_wire().unwrap();
+        b.circle([20.0, 15.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], 5.0).unwrap();
+        b.end_wire().unwrap();
+        let plate = b.build_faces().unwrap().prism([0.0, 0.0, 10.0]).unwrap();
+        assert!(plate.vertex_count() >= 8);
+        let edges = plate.edges();
+        assert_eq!(edges.len(), plate.edge_count());
+        let lines: Vec<_> = edges.iter().filter(|e| e.kind == 0).collect();
+        assert_eq!(lines.len(), 12 + 1, "box edges + the hole seam");
+        for e in &lines {
+            let d = [e.end[0] - e.start[0], e.end[1] - e.start[1], e.end[2] - e.start[2]];
+            let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            assert!((l - e.length).abs() < 1e-9);
+            for k in 0..3 {
+                assert!((e.mid[k] - (e.start[k] + e.end[k]) / 2.0).abs() < 1e-9);
+                assert!((e.dir[k] - d[k] / l).abs() < 1e-9);
+            }
+        }
+        let circles: Vec<usize> = (1..=edges.len()).filter(|&i| edges[i - 1].kind == 1).collect();
+        assert_eq!(circles.len(), 2);
+        for &i in &circles {
+            let e = &edges[i - 1];
+            assert!((e.radius - 5.0).abs() < 1e-9 && e.closed);
+            assert!((e.center[0] - 20.0).abs() < 1e-9 && (e.center[1] - 15.0).abs() < 1e-9);
+            assert!(e.axis[2].abs() > 1.0 - 1e-9);
+            assert!((e.length - std::f64::consts::TAU * 5.0).abs() < 1e-6);
+            // A hole rim edge touches the cylinder and a planar cap.
+            let fs = plate.edge_faces(i).unwrap();
+            assert_eq!(fs.len(), 2);
+            let kinds: Vec<i32> = fs.iter().map(|&f| plate.face_info(f).unwrap().kind).collect();
+            assert!(kinds.contains(&0) && kinds.contains(&1));
+        }
+        // Vertices.
+        let vs = plate.vertices();
+        assert!(vs.iter().any(|v| v == &[40.0, 30.0, 10.0]));
+        let corner = vs.iter().position(|v| v == &[40.0, 30.0, 10.0]).unwrap() + 1;
+        assert_eq!(plate.vertex_faces(corner).unwrap().len(), 3);
+        // Cylinder face axis range and face/edge adjacency.
+        let cyl = (1..=plate.face_count()).find(|&i| plate.face_info(i).unwrap().kind == 1).unwrap();
+        let fi = plate.face_info(cyl).unwrap();
+        let r = plate.face_axis_range(cyl).unwrap();
+        let z0 = fi.origin[2] + fi.normal[2] * r[0];
+        let z1 = fi.origin[2] + fi.normal[2] * r[1];
+        assert!((z0.min(z1) - 0.0).abs() < 1e-9 && (z0.max(z1) - 10.0).abs() < 1e-9, "{z0} {z1}");
+        let fe = plate.face_edges(cyl).unwrap();
+        assert!(circles.iter().all(|c| fe.contains(c)));
+        // Closest point + outward normal on the top face.
+        let top = (1..=plate.face_count()).find(|&i| { let f = plate.face_info(i).unwrap(); f.kind == 0 && f.normal[2] > 0.5 }).unwrap();
+        let (q, n) = plate.face_point_normal(top, [3.0, 4.0, 50.0]).unwrap();
+        assert!((q[0] - 3.0).abs() < 1e-7 && (q[1] - 4.0).abs() < 1e-7 && (q[2] - 10.0).abs() < 1e-7);
+        assert!((n[2] - 1.0).abs() < 1e-9);
+        // Inside the hole the closest point is on the rim.
+        let (q, _) = plate.face_point_normal(top, [20.0, 15.0, 10.0]).unwrap();
+        assert!(((q[0] - 20.0).hypot(q[1] - 15.0) - 5.0).abs() < 1e-6);
+        assert!(plate.edge_info(0).is_err() && plate.vertex_info(999).is_err());
     }
 
     #[test]

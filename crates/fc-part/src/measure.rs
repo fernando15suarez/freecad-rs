@@ -229,7 +229,7 @@ impl Document {
             };
         }
         match tail {
-            "Angle" | "Angle2" | "DrillPointAngle" | "CountersinkAngle" => Dim::Angle,
+            "Angle" | "Angle2" | "DrillPointAngle" | "CountersinkAngle" | "RotationX" | "RotationY" | "RotationZ" => Dim::Angle,
             _ => Dim::Length,
         }
     }

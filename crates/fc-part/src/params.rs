@@ -31,6 +31,7 @@ pub fn feature_props(k: &FeatureKind) -> &'static [&'static str] {
         FeatureKind::Pad(_) | FeatureKind::Pocket(_) => &["Length", "Length2"],
         FeatureKind::Revolution(_) | FeatureKind::Groove(_) => &["Angle", "Angle2"],
         FeatureKind::Hole(_) => &["Diameter", "Depth", "DrillPointAngle", "CutDiameter", "CutDepth", "CountersinkAngle"],
+        FeatureKind::MateConnector(_) => &["OffsetX", "OffsetY", "OffsetZ", "RotationX", "RotationY", "RotationZ"],
         _ => &[],
     }
 }
@@ -48,6 +49,12 @@ fn prop_mut<'a>(k: &'a mut FeatureKind, prop: &str) -> Option<&'a mut f64> {
         (FeatureKind::Hole(h), "CutDiameter") => &mut h.cut_diameter,
         (FeatureKind::Hole(h), "CutDepth") => &mut h.cut_depth,
         (FeatureKind::Hole(h), "CountersinkAngle") => &mut h.countersink_angle,
+        (FeatureKind::MateConnector(m), "OffsetX") => &mut m.offset[0],
+        (FeatureKind::MateConnector(m), "OffsetY") => &mut m.offset[1],
+        (FeatureKind::MateConnector(m), "OffsetZ") => &mut m.offset[2],
+        (FeatureKind::MateConnector(m), "RotationX") => &mut m.rotation[0],
+        (FeatureKind::MateConnector(m), "RotationY") => &mut m.rotation[1],
+        (FeatureKind::MateConnector(m), "RotationZ") => &mut m.rotation[2],
         _ => return None,
     })
 }

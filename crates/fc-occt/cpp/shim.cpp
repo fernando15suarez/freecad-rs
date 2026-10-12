@@ -60,6 +60,14 @@
 #include <Precision.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <Message.hxx>
+#include <GCPnts_AbscissaPoint.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
+#include <BRepGProp_Face.hxx>
+#include <ShapeAnalysis_Surface.hxx>
+#include <GeomAbs_CurveType.hxx>
+#include <gp_Elips.hxx>
+#include <gp_Pnt2d.hxx>
 #include <Message_Messenger.hxx>
 
 #include <stdexcept>
@@ -415,7 +423,15 @@ FaceInfo face_info(const Shape &s, size_t index) {
         fi.radius = ad.Cylinder().Radius();
         break;
     }
-    case GeomAbs_Cone: fi.kind = 2; break;
+    case GeomAbs_Cone: {
+        fi.kind = 2;
+        gp_Ax3 ax = ad.Cone().Position();
+        fi.origin = A(ax.Location().XYZ());
+        fi.normal = A(ax.Direction().XYZ());
+        fi.xdir = A(ax.XDirection().XYZ());
+        fi.radius = ad.Cone().RefRadius();
+        break;
+    }
     case GeomAbs_Sphere: fi.kind = 3; fi.radius = ad.Sphere().Radius(); fi.origin = A(ad.Sphere().Location().XYZ()); break;
     case GeomAbs_Torus: fi.kind = 4; break;
     default: fi.kind = 5; break;
@@ -432,6 +448,167 @@ FaceInfo face_info(const Shape &s, size_t index) {
     fi.bbox_max = {x1, y1, z1};
     return fi;
     OCC_CATCH("face_info")
+}
+
+size_t count_vertices(const Shape &s) { return count(s, TopAbs_VERTEX); }
+
+namespace {
+TopoDS_Shape nth(const Shape &s, TopAbs_ShapeEnum t, size_t index, const char *what) {
+    TopTools_IndexedMapOfShape m;
+    TopExp::MapShapes(s.s, t, m);
+    if (index < 1 || (int)index > m.Extent()) throw std::runtime_error(std::string(what) + ": index out of range");
+    return m.FindKey((int)index);
+}
+
+// 1-based indices (in `of` map order) of the `of` shapes adjacent to sub-shape `index` of type `t`.
+rust::Vec<size_t> adjacent(const Shape &s, TopAbs_ShapeEnum t, size_t index, TopAbs_ShapeEnum of, bool down, const char *what) {
+    TopTools_IndexedMapOfShape mt, mo;
+    TopExp::MapShapes(s.s, t, mt);
+    TopExp::MapShapes(s.s, of, mo);
+    if (index < 1 || (int)index > mt.Extent()) throw std::runtime_error(std::string(what) + ": index out of range");
+    rust::Vec<size_t> out;
+    const TopoDS_Shape &sub = mt.FindKey((int)index);
+    if (down) {
+        TopTools_IndexedMapOfShape inner;
+        TopExp::MapShapes(sub, of, inner);
+        for (int i = 1; i <= inner.Extent(); ++i) {
+            int k = mo.FindIndex(inner(i));
+            if (k > 0) out.push_back((size_t)k);
+        }
+    } else {
+        TopTools_IndexedDataMapOfShapeListOfShape anc;
+        TopExp::MapShapesAndUniqueAncestors(s.s, t, of, anc);
+        int k = anc.FindIndex(sub);
+        if (k > 0) {
+            for (TopTools_ListOfShape::Iterator it(anc(k)); it.More(); it.Next()) {
+                int j = mo.FindIndex(it.Value());
+                if (j > 0) out.push_back((size_t)j);
+            }
+        }
+    }
+    return out;
+}
+} // namespace
+
+EdgeInfo edge_info(const Shape &s, size_t index) {
+    OCC_TRY
+    TopoDS_Edge e = TopoDS::Edge(nth(s, TopAbs_EDGE, index, "edge_info"));
+    EdgeInfo ei;
+    ei.degenerated = BRep_Tool::Degenerated(e);
+    if (ei.degenerated) {
+        TopoDS_Vertex v = TopExp::FirstVertex(e);
+        gp_Pnt p = BRep_Tool::Pnt(v);
+        ei.kind = 4;
+        ei.start = ei.end = ei.mid = A(p.XYZ());
+        return ei;
+    }
+    BRepAdaptor_Curve c(e);
+    double t0 = c.FirstParameter(), t1 = c.LastParameter(), tm = 0.5 * (t0 + t1);
+    ei.start = A(c.Value(t0).XYZ());
+    ei.end = A(c.Value(t1).XYZ());
+    ei.mid = A(c.Value(tm).XYZ());
+    ei.length = GCPnts_AbscissaPoint::Length(c);
+    ei.closed = BRep_Tool::IsClosed(e) || c.Value(t0).Distance(c.Value(t1)) < Precision::Confusion();
+    gp_Pnt pm;
+    gp_Vec tan;
+    c.D1(tm, pm, tan);
+    if (tan.Magnitude() > 1e-12) ei.dir = A(tan.Normalized().XYZ());
+    switch (c.GetType()) {
+    case GeomAbs_Line: {
+        ei.kind = 0;
+        gp_Vec d(c.Value(t0), c.Value(t1));
+        if (d.Magnitude() > 1e-12) ei.dir = A(d.Normalized().XYZ());
+        break;
+    }
+    case GeomAbs_Circle: {
+        ei.kind = 1;
+        gp_Circ ci = c.Circle();
+        ei.center = A(ci.Location().XYZ());
+        ei.axis = A(ci.Axis().Direction().XYZ());
+        ei.radius = ci.Radius();
+        break;
+    }
+    case GeomAbs_Ellipse: {
+        ei.kind = 2;
+        gp_Elips el = c.Ellipse();
+        ei.center = A(el.Location().XYZ());
+        ei.axis = A(el.Axis().Direction().XYZ());
+        ei.radius = el.MajorRadius();
+        break;
+    }
+    case GeomAbs_BSplineCurve:
+    case GeomAbs_BezierCurve: ei.kind = 3; break;
+    default: ei.kind = 4; break;
+    }
+    return ei;
+    OCC_CATCH("edge_info")
+}
+
+std::array<double, 3> vertex_info(const Shape &s, size_t index) {
+    OCC_TRY
+    TopoDS_Vertex v = TopoDS::Vertex(nth(s, TopAbs_VERTEX, index, "vertex_info"));
+    return A(BRep_Tool::Pnt(v).XYZ());
+    OCC_CATCH("vertex_info")
+}
+
+rust::Vec<size_t> face_edges(const Shape &s, size_t index) {
+    OCC_TRY
+    return adjacent(s, TopAbs_FACE, index, TopAbs_EDGE, true, "face_edges");
+    OCC_CATCH("face_edges")
+}
+rust::Vec<size_t> edge_faces(const Shape &s, size_t index) {
+    OCC_TRY
+    return adjacent(s, TopAbs_EDGE, index, TopAbs_FACE, false, "edge_faces");
+    OCC_CATCH("edge_faces")
+}
+rust::Vec<size_t> vertex_faces(const Shape &s, size_t index) {
+    OCC_TRY
+    return adjacent(s, TopAbs_VERTEX, index, TopAbs_FACE, false, "vertex_faces");
+    OCC_CATCH("vertex_faces")
+}
+
+std::array<double, 2> face_axis_range(const Shape &s, size_t index) {
+    OCC_TRY
+    TopoDS_Face f = TopoDS::Face(nth(s, TopAbs_FACE, index, "face_axis_range"));
+    BRepAdaptor_Surface ad(f, true);
+    gp_Ax3 ax;
+    if (ad.GetType() == GeomAbs_Cylinder) ax = ad.Cylinder().Position();
+    else if (ad.GetType() == GeomAbs_Cone) ax = ad.Cone().Position();
+    else throw std::runtime_error("face_axis_range: face is not a cylinder or cone");
+    double u0, u1, v0, v1;
+    BRepTools::UVBounds(f, u0, u1, v0, v1);
+    gp_Pnt o = ax.Location();
+    gp_Vec z(ax.Direction());
+    double a = gp_Vec(o, ad.Value(0.5 * (u0 + u1), v0)).Dot(z);
+    double b = gp_Vec(o, ad.Value(0.5 * (u0 + u1), v1)).Dot(z);
+    return {std::min(a, b), std::max(a, b)};
+    OCC_CATCH("face_axis_range")
+}
+
+std::array<double, 6> face_point_normal(const Shape &s, size_t index, std::array<double, 3> p) {
+    OCC_TRY
+    TopoDS_Face f = TopoDS::Face(nth(s, TopAbs_FACE, index, "face_point_normal"));
+    TopoDS_Vertex v = BRepBuilderAPI_MakeVertex(P(p));
+    BRepExtrema_DistShapeShape dss(v, f);
+    if (!dss.IsDone() || dss.NbSolution() < 1) throw std::runtime_error("face_point_normal: projection failed");
+    gp_Pnt q = dss.PointOnShape2(1);
+    double u, w;
+    if (dss.SupportTypeShape2(1) == BRepExtrema_IsInFace) {
+        dss.ParOnFaceS2(1, u, w);
+    } else {
+        ShapeAnalysis_Surface sas(BRep_Tool::Surface(f));
+        gp_Pnt2d uv = sas.ValueOfUV(q, Precision::Confusion());
+        u = uv.X();
+        w = uv.Y();
+    }
+    BRepGProp_Face gf(f);
+    gp_Pnt pt;
+    gp_Vec n;
+    gf.Normal(u, w, pt, n);
+    if (n.Magnitude() < 1e-12) throw std::runtime_error("face_point_normal: degenerate normal");
+    n.Normalize();
+    return {q.X(), q.Y(), q.Z(), n.X(), n.Y(), n.Z()};
+    OCC_CATCH("face_point_normal")
 }
 
 MeshData mesh(const Shape &s, double lin, double ang) {

@@ -18,6 +18,8 @@ pub mod ffi {
     #[derive(Default, Debug, Clone)]
     pub struct FaceInfo {
         /// 0 = plane, 1 = cylinder, 2 = cone, 3 = sphere, 4 = torus, 5 = other.
+        /// Cylinders and cones: `origin`/`normal` are a point on the axis and the axis
+        /// direction, `radius` the (reference) radius.
         pub kind: i32,
         pub origin: [f64; 3],
         pub normal: [f64; 3],
@@ -27,6 +29,27 @@ pub mod ffi {
         pub center: [f64; 3],
         pub bbox_min: [f64; 3],
         pub bbox_max: [f64; 3],
+    }
+
+    /// Geometric description of one B-rep edge (1-based index in `TopExp::MapShapes` order,
+    /// FreeCAD's `Edge<n>`). Start/end follow the curve's parameter direction.
+    #[derive(Default, Debug, Clone)]
+    pub struct EdgeInfo {
+        /// 0 = line, 1 = circle (or arc), 2 = ellipse, 3 = B-spline/Bezier, 4 = other/degenerated.
+        pub kind: i32,
+        pub start: [f64; 3],
+        pub end: [f64; 3],
+        /// Point at the middle parameter.
+        pub mid: [f64; 3],
+        pub length: f64,
+        /// Lines: unit direction start -> end. Other curves: unit tangent at `mid`.
+        pub dir: [f64; 3],
+        /// Circles/ellipses: center, axis (unit) and radius (major radius for ellipses).
+        pub center: [f64; 3],
+        pub axis: [f64; 3],
+        pub radius: f64,
+        pub closed: bool,
+        pub degenerated: bool,
     }
 
     unsafe extern "C++" {
@@ -81,6 +104,20 @@ pub mod ffi {
         fn count_faces(s: &Shape) -> usize;
         fn count_edges(s: &Shape) -> usize;
         fn face_info(s: &Shape, index: usize) -> Result<FaceInfo>;
+        fn count_vertices(s: &Shape) -> usize;
+        fn edge_info(s: &Shape, index: usize) -> Result<EdgeInfo>;
+        fn vertex_info(s: &Shape, index: usize) -> Result<[f64; 3]>;
+        /// 1-based edge indices bounding face `index`.
+        fn face_edges(s: &Shape, index: usize) -> Result<Vec<usize>>;
+        /// 1-based face indices adjacent to edge `index`.
+        fn edge_faces(s: &Shape, index: usize) -> Result<Vec<usize>>;
+        /// 1-based face indices touching vertex `index`.
+        fn vertex_faces(s: &Shape, index: usize) -> Result<Vec<usize>>;
+        /// Axial extent [min, max] of a cylindrical/conical face, measured along its
+        /// `FaceInfo::normal` from `FaceInfo::origin`.
+        fn face_axis_range(s: &Shape, index: usize) -> Result<[f64; 2]>;
+        /// Closest point on face `index` to `p` and the outward normal there: [px, py, pz, nx, ny, nz].
+        fn face_point_normal(s: &Shape, index: usize, p: [f64; 3]) -> Result<[f64; 6]>;
         fn mesh(s: &Shape, linear_deflection: f64, angular_deflection: f64) -> Result<MeshData>;
 
         // ---- io ----

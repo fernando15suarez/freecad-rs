@@ -177,6 +177,24 @@ impl App {
                     });
                 }
             }
+            FeatureKind::MateConnector(m) => {
+                let anchor = match &m.anchor {
+                    fc_part::Anchor::Origin => "Body origin".to_string(),
+                    fc_part::Anchor::Topo { at, .. } => format!("{}.{}", sketch_name(&self.doc, at.feature), at.name()),
+                };
+                self.pro(ui, lay, "Anchor", &anchor);
+                for (label, prop, unit) in [("Offset X", "OffsetX", "mm"), ("Offset Y", "OffsetY", "mm"), ("Offset Z", "OffsetZ", "mm"), ("Rotation X", "RotationX", "°"), ("Rotation Y", "RotationY", "°"), ("Rotation Z", "RotationZ", "°")] {
+                    self.pvalue(ui, lay, label, "", &format!("{name}.{prop}"), unit);
+                }
+                let mut flip = m.flip_z;
+                if self.pbool(ui, lay, "Flip primary axis", "Reverse the connector's Z axis", &mut flip) {
+                    self.change(|d| {
+                        if let Some(FeatureKind::MateConnector(x)) = d.get_mut(id).map(|f| &mut f.kind) {
+                            x.flip_z = flip;
+                        }
+                    });
+                }
+            }
             FeatureKind::AdditiveLoft(l) | FeatureKind::SubtractiveLoft(l) => {
                 self.pro(ui, lay, "Profile", &sketch_name(&self.doc, l.profile));
                 for (i, s) in l.sections.iter().enumerate() {

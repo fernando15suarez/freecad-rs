@@ -11,6 +11,7 @@ namespace fcocc {
 
 struct MeshData;
 struct FaceInfo;
+struct EdgeInfo;
 
 struct Shape {
     TopoDS_Shape s;
@@ -60,6 +61,14 @@ size_t count_solids(const Shape &s);
 size_t count_faces(const Shape &s);
 size_t count_edges(const Shape &s);
 FaceInfo face_info(const Shape &s, size_t index);
+size_t count_vertices(const Shape &s);
+EdgeInfo edge_info(const Shape &s, size_t index);
+std::array<double, 3> vertex_info(const Shape &s, size_t index);
+rust::Vec<size_t> face_edges(const Shape &s, size_t index);
+rust::Vec<size_t> edge_faces(const Shape &s, size_t index);
+rust::Vec<size_t> vertex_faces(const Shape &s, size_t index);
+std::array<double, 2> face_axis_range(const Shape &s, size_t index);
+std::array<double, 6> face_point_normal(const Shape &s, size_t index, std::array<double, 3> p);
 MeshData mesh(const Shape &s, double lin, double ang);
 
 void write_step(const Shape &s, rust::Str path);
