@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
 const OCCT_LIBS: &[&str] = &[
+    // XDE (assembly STEP, `cpp/asm.cpp`) and the OCAF toolkits under it.
+    "TKXCAF", "TKVCAF", "TKV3d", "TKService", "TKHLR", "TKCAF", "TKLCAF", "TKCDF",
     "TKDESTEP", "TKDESTL", "TKDEIGES", "TKDE", "TKXSBase", "TKOffset", "TKFillet", "TKBool", "TKBO",
     "TKFeat", "TKMesh", "TKShHealing", "TKPrim", "TKTopAlgo", "TKGeomAlgo", "TKBRep", "TKGeomBase",
     "TKG3d", "TKG2d", "TKMath", "TKernel",
@@ -74,8 +76,8 @@ fn main() {
     }
     // Headers live in include/ (our build) or include/opencascade (some prebuilt installs).
     let include = [occt.join("include/opencascade"), occt.join("include")].into_iter().find(|p| p.join("Standard.hxx").exists()).unwrap_or_else(|| occt.join("include"));
-    let mut b = cxx_build::bridge("src/ffi.rs");
-    b.file("cpp/shim.cpp").include(&include).include("cpp").std("c++17");
+    let mut b = cxx_build::bridges(["src/ffi.rs", "src/asm.rs"]);
+    b.file("cpp/shim.cpp").file("cpp/asm.cpp").include(&include).include("cpp").std("c++17");
     if msvc {
         // OCCT is linked statically: without this its headers declare everything __declspec(dllimport).
         b.define("OCCT_STATIC_BUILD", None).define("_USE_MATH_DEFINES", None).define("NOMINMAX", None).flag("/bigobj");
@@ -86,4 +88,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/ffi.rs");
     println!("cargo:rerun-if-changed=cpp/shim.cpp");
     println!("cargo:rerun-if-changed=cpp/shim.h");
+    println!("cargo:rerun-if-changed=src/asm.rs");
+    println!("cargo:rerun-if-changed=cpp/asm.cpp");
+    println!("cargo:rerun-if-changed=cpp/asm.h");
 }

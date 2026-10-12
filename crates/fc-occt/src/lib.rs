@@ -2,9 +2,11 @@
 //!
 //! All geometry is in millimetres, world coordinates, Z up (FreeCAD conventions).
 
+pub mod asm;
 pub mod ffi;
 
 use cxx::UniquePtr;
+pub use asm::{AsmComp, AsmNode, Distance, Label, Matrix34, StepSchema, XdeDoc};
 pub use ffi::ffi::{EdgeInfo, FaceInfo, MeshData};
 use ffi::ffi as sys;
 use std::fmt;
