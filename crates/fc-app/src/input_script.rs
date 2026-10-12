@@ -23,7 +23,9 @@
 //!   demo | saveto PATH | external NAME EXPR   (test helpers: load the demo, save to PATH, and rewrite the open
 //!     file on disk the way Calc Canvas does: parameter NAME = EXPR, marked driven)
 //!   expect measure NAME V | param NAME V | driven NAME | banner true|false | dirty true|false
-//!   asmdemo | mark       load two demo parts (Plate, Pin) with mate connectors / remember placements
+//!   asmdemo [assembled] | mark | open PATH   load the demo parts Plate and Arm (with mate connectors;
+//!                        `assembled`: also their revolute assembly) / remember placements / open a file
+//!   expect connectors N | parts N
 //!   expect tab part NAME|assembly NAME | instances N | joints N | joint TYPE NAME | grounded NAME true|false
 //!   expect dof N (assembly) | solved true | moved NAME true|false | fixed_point NAME X Y Z (since mark)
 //!   expect connector NAME X Y Z | anchor EdgeN... | asmtask true|false
@@ -103,7 +105,7 @@ pub fn parse(src: &str) -> Result<Vec<Step>, String> {
             "scroll" => Step::Scroll(f(1)? as f32, f(2)? as f32),
             "wait" => Step::Wait(f(1)? as u32),
             "expect" => Step::Expect(w.get(1).unwrap_or(&"").to_string(), w[2.min(w.len())..].join(" ")),
-            "demo" | "saveto" | "external" | "asmdemo" | "mark" => Step::Do(w[0].to_string(), line[w[0].len()..].trim().to_string()),
+            "demo" | "saveto" | "external" | "asmdemo" | "mark" | "open" => Step::Do(w[0].to_string(), line[w[0].len()..].trim().to_string()),
             "shot" => Step::Shot(w.get(1).unwrap_or(&"").to_string()),
             "quit" => Step::Quit,
             other => return Err(format!("line {}: unknown step '{other}'", ln + 1)),

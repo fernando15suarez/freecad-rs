@@ -145,6 +145,9 @@ impl App {
         self.vp.set_selection(vec![]);
         self.solve_active(false);
         self.rebuild_scene();
+        // the assembly's Tasks panel is always open: fit into the rest of the view
+        self.vp.right_inset = if self.active_assembly().is_some() { tasks::TASK_W } else { 0.0 };
+        self.vp.fit_all();
     }
 
     /// What Save writes: a single-part workspace stays a plain v1 body document (readable by
@@ -183,6 +186,7 @@ impl App {
             self.solve_active(false);
         }
         self.rebuild_scene();
+        self.vp.right_inset = if self.active_assembly().is_some() { tasks::TASK_W } else { 0.0 };
         self.vp.fit_all();
         self.status = match t {
             Tab::Part(p) => format!("Part Design: {}", self.part_name(p)),

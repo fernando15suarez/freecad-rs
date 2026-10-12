@@ -89,4 +89,12 @@ expect dof 1
 key Z cmd
 wait 4
 expect moved Arm false
+# save as a v2 workspace and open it again
+saveto OUT/asm_revolute.fcrs
+open OUT/asm_revolute.fcrs
+wait 5
+expect parts 2
+expect tab assembly Assembly
+expect joints 1
+expect dof 1
 quit

@@ -117,7 +117,8 @@ DOF (`fc_assembly::fcstd`).
   angles are unwrapped from the solve-start value.
 - **Distance joint variants.** Torus variants are mapped onto the plane, line and point cases. A Distance
   of 0 for point-line becomes an in-line constraint, where Ondsel uses a singular √.
-- **FCStd import.** Parts are imported as placeholders without geometry, App::Link chains are not
-  followed, and the Distance variant is guessed from the element names.
+- **FCStd import.** Members that are PartDesign Bodies (directly, via App::Link or inside an App::Part)
+  import their bodies; other members (Part::Box, ...) are placeholders without geometry. The Distance
+  variant is guessed from the element names.
 - **Not done yet.** Sub-assemblies as instances (geometry references into them), simulations and motions,
   BOM, and exploded-view animation.

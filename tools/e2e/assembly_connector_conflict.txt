@@ -1,0 +1,47 @@
+# Assembly mate connector on a part's face, then a Fixed joint that contradicts the revolute:
+# the solver reports the conflict and the tree shows the joints in red; undo removes it.
+wait 5
+asmdemo assembled
+wait 6
+expect tab assembly Assembly
+expect dof 1
+at ui tb:asmconnector
+click
+wait 4
+expect asmtask true
+at inst Arm 38 2 5
+wait 3
+shot OUT/asm_conn_hover.png
+click
+wait 3
+at ui conn:flip
+click
+wait 2
+at ui task:ok
+click
+wait 4
+expect connectors 1
+expect dof 1
+shot OUT/asm_connector.png
+at ui tb:joint:fixed
+click
+wait 4
+at triad Plate.MateConnector
+wait 3
+click
+wait 3
+at triad MateConnector
+wait 3
+click
+wait 5
+at ui task:ok
+click
+wait 5
+expect joints 2
+expect solved false
+shot OUT/asm_conflict.png
+key Z cmd
+wait 5
+expect joints 1
+expect solved true
+quit

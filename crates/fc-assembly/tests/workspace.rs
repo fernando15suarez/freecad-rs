@@ -118,3 +118,20 @@ fn freecad_picks_and_onshape_inference_on_a_body() {
     let pl = asm.instance(b).unwrap().placement;
     assert!(pl.z_axis()[2] > 1.0 - 1e-9, "{pl:?}");
 }
+
+/// A FreeCAD assembly of App::Links to PartDesign Bodies (tools/parity/assembly/make_pd_hinge.py)
+/// imports the bodies' geometry, not placeholders, and solves to FreeCAD's 1 DOF.
+#[test]
+fn fcstd_assembly_imports_partdesign_bodies() {
+    let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools/parity/assembly/pd_hinge.FCStd");
+    let (mut ws, notes) = fc_assembly::fcstd::import(p).expect("import");
+    assert!(notes.iter().all(|n| !n.contains("placeholder")), "{notes:?}");
+    let names: Vec<&str> = ws.parts.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["Base", "Lever"]);
+    ws.recompute();
+    assert!(ws.parts.iter().all(|p| p.doc.result().is_some()));
+    let id = ws.assemblies[0].id;
+    let rep = ws.solve_assembly(id, &fc_assembly::SolveOptions::default()).unwrap();
+    assert!(rep.ok(), "{rep:?}");
+    assert_eq!(rep.dof, 1);
+}

@@ -6,8 +6,9 @@
 //! `Angle`, limits, `Suppressed`) becomes a [`Joint`] on detached frames
 //! ([`JointRef::Frame`] = FreeCAD's `Placement1/2`, which already include `Offset1/2`).
 //!
-//! Part geometry is not imported (each part object becomes an empty fc-part document
-//! named after it); the Distance joint variant is guessed from the element names
+//! Members that are PartDesign Bodies (directly, through an `App::Link`, or inside an
+//! `App::Part`) bring their bodies along through `fc_part::fcstd::import_body_xml`; other
+//! members become empty placeholder parts named after them. The Distance joint variant is guessed from the element names
 //! (Vertex/Edge/Face) since the faces' surface types are not available. Both are listed in
 //! the returned notes.
 
@@ -206,7 +207,9 @@ pub fn import_document_xml(text: &str) -> Result<(Workspace, Vec<String>), Fcstd
                         }
                     });
                     let has_geometry = doc.is_some();
-                    let pid = ws.add_part(&name, doc.unwrap_or_default());
+                    // the part is named after its Body (links get labels like "Base001")
+                    let part_name = body.as_ref().filter(|_| doc.is_some()).and_then(|b| objects.get(b)).and_then(|o| prop_string(o, "Label")).unwrap_or_else(|| name.clone());
+                    let pid = ws.add_part(&part_name, doc.unwrap_or_default());
                     match &body {
                         Some(b) if has_geometry => {
                             body_parts.insert(b.clone(), pid);

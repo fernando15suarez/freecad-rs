@@ -1372,6 +1372,8 @@ impl App {
                     }),
                     "instances" => self.asm_ref().map(|a| a.instances.len().to_string()),
                     "joints" => self.asm_ref().map(|a| a.joints.len().to_string()),
+                    "connectors" => self.asm_ref().map(|a| a.connectors.len().to_string()),
+                    "parts" => Some(self.ws.parts.len().to_string()),
                     "joint" => self.asm_ref().map(|a| a.joints.iter().map(|j| format!("{} {}", j.kind.type_name(), j.name)).collect::<Vec<_>>().join(", ")).map(|s| if s.split(", ").any(|x| x == val) { val.clone() } else { s }),
                     "grounded" => {
                         let (n, want) = val.split_once(' ').unwrap_or((&val, "true"));
@@ -1464,8 +1466,11 @@ impl App {
                 }
             }
             Step::Do(cmd, arg) => match cmd.as_str() {
+                "open" => {
+                    self.open_path(PathBuf::from(&arg));
+                }
                 "asmdemo" => {
-                    self.load_workspace(crate::demo::assembly_workspace(false));
+                    self.load_workspace(crate::demo::assembly_workspace(arg == "assembled"));
                     self.path = None;
                     self.dirty = false;
                     self.undo.clear();
