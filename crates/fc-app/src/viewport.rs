@@ -125,6 +125,8 @@ pub struct Viewport {
     pub capture_primary: bool,
     /// Something drawn over the view (a connector triad) is under the cursor: no hover pick.
     pub suppress_hover: bool,
+    /// Objects from this index on are drawn but not pickable (e.g. a part being placed).
+    pub pick_limit: usize,
 }
 
 impl Viewport {
@@ -154,6 +156,7 @@ impl Viewport {
             right_inset: 0.0,
             capture_primary: false,
             suppress_hover: false,
+            pick_limit: usize::MAX,
         }
     }
 
@@ -551,7 +554,7 @@ impl Viewport {
         // nearest face triangle
         let mut best: Option<(f64, usize, u32)> = None;
         for (oi, (obj, c)) in self.objects.iter().zip(&self.cache).enumerate() {
-            if !obj.visible || !ray_aabb(o, d, c.min, c.max) {
+            if !obj.visible || oi >= self.pick_limit || !ray_aabb(o, d, c.min, c.max) {
                 continue;
             }
             let m = &obj.mesh;
@@ -572,7 +575,7 @@ impl Viewport {
         // nearest edge in screen space
         let mut best_e: Option<(f64, usize, u32, DVec3)> = None;
         for (oi, obj) in self.objects.iter().enumerate() {
-            if !obj.visible {
+            if !obj.visible || oi >= self.pick_limit {
                 continue;
             }
             for e in &obj.edges {
@@ -605,7 +608,7 @@ impl Viewport {
         // vertices win over edges and faces within a few pixels
         let mut best_v: Option<(f64, usize, u32, DVec3)> = None;
         for (oi, obj) in self.objects.iter().enumerate() {
-            if !obj.visible {
+            if !obj.visible || oi >= self.pick_limit {
                 continue;
             }
             for (vi, v) in obj.vertices.iter().enumerate() {

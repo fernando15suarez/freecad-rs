@@ -266,6 +266,7 @@ impl App {
                 objs.push(g);
             }
         }
+        self.vp.pick_limit = map.len();
         self.asm.objs = map;
         self.vp.set_objects(objs);
         self.vp.set_overlay(crate::viewport::Overlay::default());
@@ -349,7 +350,7 @@ impl App {
                 let n = self.inst_part(*instance).and_then(|p| self.ws.part(p)).and_then(|e| e.doc.get(*connector)).map(|f| f.label.clone()).unwrap_or_else(|| "?".into());
                 format!("{}.{n}", self.inst_name(*instance))
             }
-            JointRef::AssemblyConnector(c) => asm.and_then(|a| a.connectors.iter().find(|x| x.id == *c)).map(|c| c.name.clone()).unwrap_or_else(|| "?".into()),
+            JointRef::AssemblyConnector(c) => asm.and_then(|a| a.connectors.iter().find(|x| x.id == *c)).map(|c| format!("{}.{}", self.inst_name(c.instance), c.name)).unwrap_or_else(|| "?".into()),
             JointRef::Geometry { instance, element, implicit } => {
                 let how = match implicit {
                     ImplicitPoint::Infer(i) => {
@@ -603,13 +604,28 @@ impl App {
                 }
             }
         }
+        if let Some(asm) = self.asm_ref() {
+            for j in self.asm.problem_joints() {
+                if self.asm.report.as_ref().is_some_and(|r| r.status == SolveStatus::Redundant) {
+                    continue;
+                }
+                if let Ok((a, _)) = asm.joint_frames(&self.ws, j) {
+                    mate_ui::draw(&p, &self.vp, &mate_ui::from_asm(&a), Look::Error);
+                }
+            }
+        }
         if let Some(Hover::Triad(_, f)) = &self.asm.hover {
             // the hovered triad on top of the others
             mate_ui::draw(&p, &self.vp, f, Look::Hover);
         }
-        if let Some(Hover::Geom { frame, points, chosen, .. }) = &self.asm.hover {
+        if let Some(Hover::Geom { frame, points, chosen, inst, element, infer }) = &self.asm.hover {
             mate_ui::draw_points(&p, &self.vp, points, Some(*chosen));
             mate_ui::draw(&p, &self.vp, frame, Look::Ghost);
+            let r = JointRef::Geometry { instance: *inst, element: element.clone(), implicit: ImplicitPoint::Infer(*infer) };
+            mate_ui::label(&p, &self.vp, frame, &self.ref_label(&r));
+        }
+        if let Some(Hover::Triad(r, f)) = &self.asm.hover {
+            mate_ui::label(&p, &self.vp, f, &self.ref_label(r));
         }
         if let Some(AsmTask::Connector(t)) = &self.asm.task {
             if let Some(f) = self.conn_task_frame(t) {
@@ -639,7 +655,7 @@ impl App {
             if first {
                 asm.set_grounded(id, true);
             }
-            self.asm.sel = vec![AsmSel::Inst(id)];
+            let _ = id;
         }
         if let Some(AsmTask::Insert { added, .. }) = self.asm.task.as_mut() {
             *added += 1;
@@ -964,13 +980,17 @@ impl App {
             return (format!("{}: {why}", asm.joint(*j).map(|x| x.name.clone()).unwrap_or_default()), Some(theme::ERROR));
         }
         match r.status {
-            SolveStatus::Conflicting => (format!("Conflicting joints: {}", names(&r.conflicting_joints)), Some(theme::ERROR)),
-            SolveStatus::Failed => (format!("The solver failed{}", if r.unsatisfied_joints.is_empty() { String::new() } else { format!(": {} not satisfied", names(&r.unsatisfied_joints)) }), Some(theme::ERROR)),
-            SolveStatus::Redundant => (format!("Redundant joints: {} · {}", names(&r.redundant_joints), dof_text(r.dof)), Some(theme::WARNING)),
-            SolveStatus::Solved => (dof_text(r.dof), None),
+            SolveStatus::Conflicting => (format!("Conflicting joints: {} contradict each other. Delete or suppress one of them.", names(&r.conflicting_joints)), Some(theme::ERROR)),
+            SolveStatus::Failed => (format!("The solver failed{}", if r.unsatisfied_joints.is_empty() { String::new() } else { format!(": {} cannot be satisfied", names(&r.unsatisfied_joints)) }), Some(theme::ERROR)),
+            SolveStatus::Redundant => (format!("Redundant joints: {} (implied by the others) · {}", names(&r.redundant_joints), dof_text(r.dof)), Some(theme::WARNING)),
+            SolveStatus::Solved if r.dof == 0 => (dof_text(0), Some(theme::GREEN)),
+            SolveStatus::Solved => (dof_text(r.dof), Some(UNDER)),
         }
     }
 }
+
+/// Under-constrained (amber, like the sketcher's under-constrained state).
+const UNDER: Color32 = Color32::from_rgb(240, 190, 90);
 
 fn dof_text(dof: usize) -> String {
     if dof == 0 { "Fully constrained".into() } else { format!("Under-constrained: {dof} degree{} of freedom", if dof == 1 { "" } else { "s" }) }
@@ -1031,7 +1051,7 @@ impl App {
 
     fn link_row(ui: &mut egui::Ui, reg: &str, icon: &str, text: &str, tip: &str) -> bool {
         let w = ui.available_width();
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 24.0), egui::Sense::click());
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 22.0), egui::Sense::click());
         widgets::reg(reg.to_string(), rect);
         if resp.hovered() {
             ui.painter().rect_filled(rect, 3.0, theme::HOVER_ROW);
@@ -1042,21 +1062,54 @@ impl App {
         resp.clicked()
     }
 
+    /// Free parts and their remaining DOF in plain words.
+    fn free_parts_text(&self) -> Option<String> {
+        let asm = self.asm_ref()?;
+        let r = self.asm.report.as_ref()?;
+        if !r.ok() || r.no_ground {
+            return None;
+        }
+        let free: Vec<&str> = asm.instances.iter().filter(|i| !i.grounded).map(|i| i.name.as_str()).collect();
+        if free.is_empty() {
+            return Some("Every part is grounded".into());
+        }
+        Some(if r.dof == 0 { format!("{} held in place by the joints", free.join(", ")) } else { format!("{} can still move: drag {} in the 3D view", free.join(", "), if free.len() == 1 { "it" } else { "them" }) })
+    }
+
     fn solver_box(&mut self, ui: &mut egui::Ui) {
         let (msg, col) = self.solver_message();
-        let dof = self.asm.report.as_ref().map(|r| r.dof);
+        let detail = self.free_parts_text();
+        let problems = self.asm.problem_joints();
+        let mut select = false;
         task_box(ui, "solver", "Assembly_SolveAssembly", "Solver", |ui| {
             ui.horizontal_wrapped(|ui| {
+                let icon = if col == Some(theme::ERROR) {
+                    "overlay_error"
+                } else if col == Some(theme::GREEN) {
+                    "edit_OK"
+                } else {
+                    "Warning"
+                };
                 if col.is_some() {
-                    ui.add(crate::icons::image(ui.ctx(), if col == Some(theme::ERROR) { "overlay_error" } else { "Warning" }, 16.0));
+                    ui.add(crate::icons::image(ui.ctx(), icon, 16.0));
                 }
-                ui.label(RichText::new(&msg).color(col.unwrap_or(theme::GREEN)));
+                ui.label(RichText::new(&msg).color(col.unwrap_or(theme::TEXT)));
             });
-            if let (Some(d), Some(r)) = (dof, &self.asm.report) {
-                ui.add_space(4.0);
-                ui.label(RichText::new(format!("{} free part{} · {} joint equations · {d} DOF", r.free_instances, if r.free_instances == 1 { "" } else { "s" }, r.equations)).color(theme::TEXT_DIM));
+            if let Some(d) = &detail {
+                ui.add_space(2.0);
+                ui.label(RichText::new(d).color(theme::TEXT_DIM));
+            }
+            if !problems.is_empty() {
+                ui.add_space(2.0);
+                let r = ui.link(RichText::new("Select the joints involved").color(Color32::from_rgb(110, 170, 255)));
+                widgets::reg("solver:select", r.rect);
+                select = r.clicked();
             }
         });
+        if select {
+            self.asm.sel = problems.into_iter().map(AsmSel::Joint).collect();
+            self.rebuild_scene();
+        }
     }
 
     fn asm_overview_panel(&mut self, ui: &mut egui::Ui) {
@@ -1083,7 +1136,7 @@ impl App {
                 if Self::link_row(ui, "taskact:ground", "Assembly_ToggleGrounded", "Toggle Grounded", "Fix the selected part in place (or release it)") {
                     act = Some(chrome::Act::Ground);
                 }
-                if Self::link_row(ui, "taskact:connector", "Std_CoordinateSystem", "Mate Connector", "Add an Onshape-style mate connector anchored to a part's face, edge or vertex") {
+                if Self::link_row(ui, "taskact:connector", "PartDesign_CoordinateSystem", "Mate Connector", "Add an Onshape-style mate connector anchored to a part's face, edge or vertex") {
                     act = Some(chrome::Act::AsmConnector);
                 }
                 if Self::link_row(ui, "taskact:solve", "Assembly_SolveAssembly", "Solve Assembly", "Solve the joints again") {
@@ -1098,10 +1151,15 @@ impl App {
 
     fn insert_panel(&mut self, ui: &mut egui::Ui) {
         let (cancel, ok) = self.ok_cancel(ui);
-        let parts: Vec<(PartId, String, bool)> = self.ws.parts.iter().map(|p| (p.id, p.name.clone(), p.doc.result().is_some())).collect();
+        let filter = self.fields.get("asm:insert_search").cloned().unwrap_or_default().to_lowercase();
+        let parts: Vec<(PartId, String, bool)> = self.ws.parts.iter().filter(|p| p.name.to_lowercase().contains(filter.trim())).map(|p| (p.id, p.name.clone(), p.doc.result().is_some())).collect();
         let pending = self.asm.pending;
         let mut chosen = None;
+        let mut search = self.fields.get("asm:insert_search").cloned().unwrap_or_default();
         task_box(ui, "insert", "Assembly_InsertLink", "Insert", |ui| {
+            let r = ui.add(egui::TextEdit::singleline(&mut search).hint_text("Search parts...").desired_width(ui.available_width() - 4.0).margin(egui::Margin::symmetric(5, 3)));
+            widgets::reg("insert:search", r.rect);
+            ui.add_space(4.0);
             egui::Frame::new().fill(theme::INPUT).stroke(egui::Stroke::new(1.0, theme::BORDER)).corner_radius(3.0).inner_margin(3.0).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.set_min_height(120.0);
@@ -1120,8 +1178,11 @@ impl App {
                 }
             });
             ui.add_space(6.0);
-            ui.label(RichText::new("Click a part to insert it. The first part goes to the origin and is grounded; the next ones follow the cursor until you click in the 3D view. Insert as many as you need, then OK.").color(Color32::from_gray(185)));
+            for t in ["Click a part to insert it", "The first part goes to the origin, grounded", "Others follow the cursor: click to place", "Insert as many as needed, then OK"] {
+                ui.label(RichText::new(format!("•  {t}")).color(Color32::from_gray(190)));
+            }
         });
+        self.fields.insert("asm:insert_search".into(), search);
         if let Some(p) = chosen {
             self.insert_choose(p);
         }
@@ -1144,16 +1205,16 @@ impl App {
         let labels: Vec<String> = refs.iter().map(|r| self.ref_label(r)).collect();
         let jname = jid.and_then(|j| self.asm_ref().and_then(|a| a.joint(j))).map(|j| j.name.clone());
         egui::ScrollArea::vertical().id_salt("joint_scroll").auto_shrink([false, true]).show(ui, |ui| {
+            self.solver_box(ui);
             let title = match (&jname, editing) {
                 (Some(n), true) => format!("Edit {n}"),
-                (Some(n), false) => n.clone(),
-                (None, _) => format!("New {} joint", kind.type_name()),
+                _ => format!("Create {} joint", kind.type_name()),
             };
             task_box(ui, "joint", joint_icon(&kind), &title, |ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
                 // joint type combo with icons
                 let cur = JOINT_TOOLS.iter().find(|(n, _, _)| joint_kind(n).type_name() == kind.type_name()).map(|x| x.0).unwrap_or("Fixed");
-                let r = egui::ComboBox::from_id_salt("joint_type").selected_text(cur).width(ui.available_width() - 4.0).show_ui(ui, |ui| {
+                let r = egui::ComboBox::from_id_salt("joint_type").selected_text(cur).width(ui.available_width() - 14.0).show_ui(ui, |ui| {
                     for (name, icon, tip) in JOINT_TOOLS {
                         let r = ui.add(egui::Button::image_and_text(crate::icons::image(ui.ctx(), icon, 16.0), name).selected(name == cur).frame(false)).on_hover_text(tip);
                         widgets::reg(format!("opt:joint_type:{name}"), r.rect);
@@ -1165,7 +1226,7 @@ impl App {
                 widgets::reg("combo:joint_type", r.response.rect);
                 // the two references (FreeCAD's selection list)
                 egui::Frame::new().fill(theme::INPUT).stroke(egui::Stroke::new(1.0, theme::BORDER)).corner_radius(3.0).inner_margin(4.0).show(ui, |ui| {
-                    ui.set_width(ui.available_width());
+                    ui.set_width(ui.available_width() - 10.0);
                     ui.set_min_height(56.0);
                     for i in 0..2 {
                         ui.horizontal(|ui| {
@@ -1173,7 +1234,7 @@ impl App {
                             match labels.get(i) {
                                 Some(l) => {
                                     let icon = match refs[i] {
-                                        JointRef::PartConnector { .. } | JointRef::AssemblyConnector(_) => "Std_CoordinateSystem",
+                                        JointRef::PartConnector { .. } | JointRef::AssemblyConnector(_) => "PartDesign_CoordinateSystem",
                                         _ => "PartDesign_Body",
                                     };
                                     ui.add(crate::icons::image(ui.ctx(), icon, 16.0));
@@ -1187,7 +1248,7 @@ impl App {
                                     });
                                 }
                                 None => {
-                                    ui.label(RichText::new(if i == 0 { "1. Click a mate connector or an element of a part" } else { "2. ...then one on another part" }).color(theme::TEXT_DIM).italics());
+                                    ui.label(RichText::new(if i == 0 { "1. Click a mate connector or a face, edge or vertex" } else { "2. Then one on another part" }).color(Color32::from_gray(190)));
                                 }
                             }
                         });
@@ -1213,15 +1274,16 @@ impl App {
                     changed |= task_row(ui, "Rotation", |ui| self.num_field(ui, "joint.rotation", &mut rotation, "°"));
                 }
                 ui.horizontal(|ui| {
-                    let r = ui.add(egui::Button::image_and_text(crate::icons::image(ui.ctx(), "Assembly_CreateJointParallel", 16.0), "Reverse")).on_hover_text("Flip the direction of the joint (FreeCAD's Reverse, Onshape's flip primary axis)");
+                    let r = ui.add(egui::Button::image_and_text(crate::icons::image(ui.ctx(), "view-rotate-left", 16.0), "Reverse")).on_hover_text("Flip the direction of the joint (FreeCAD's Reverse, Onshape's flip primary axis)");
                     widgets::reg("joint:reverse", r.rect);
                     reverse = r.clicked();
                 });
                 let angular = matches!(kind, JointKind::Revolute | JointKind::Cylindrical);
                 let linear = matches!(kind, JointKind::Slider | JointKind::Cylindrical);
                 if angular || linear {
-                    ui.add_space(2.0);
-                    ui.label(RichText::new("Limits").color(theme::TEXT));
+                    ui.add_space(4.0);
+                    ui.separator();
+                    ui.label(RichText::new("Limits").font(theme::bold_font(13.0)).color(theme::TEXT));
                     let mut row = |app: &mut App, ui: &mut egui::Ui, label: &str, id: &str, v: &mut Option<f64>, unit: &str| {
                         ui.horizontal(|ui| {
                             let mut on = v.is_some();
@@ -1248,7 +1310,6 @@ impl App {
                     }
                 }
             });
-            self.solver_box(ui);
         });
         let mut apply = changed || new_kind != kind || remove.is_some();
         if reverse {
@@ -1288,7 +1349,7 @@ impl App {
         let mut offset = t.offset;
         let (mut flip, mut turn) = (false, false);
         let mut changed = false;
-        task_box(ui, "asm_conn", "Std_CoordinateSystem", "Mate connector", |ui| {
+        task_box(ui, "asm_conn", "PartDesign_CoordinateSystem", "Mate connector", |ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
             task_row(ui, "Origin", |ui| match &label {
                 Some(l) => {
@@ -1449,7 +1510,7 @@ impl App {
                     depth: depth + 1,
                     expander: None,
                     eye: None,
-                    icon: "Std_CoordinateSystem",
+                    icon: "PartDesign_CoordinateSystem",
                     badge: None,
                     label: RichText::new(&c.name),
                     selected: active && self.asm.sel.contains(&s),

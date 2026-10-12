@@ -99,6 +99,8 @@ pub enum Look {
     Selected,
     /// Preview of what a click would create.
     Ghost,
+    /// Frame of a conflicting joint.
+    Error,
 }
 
 /// Screen-space size: world units per pixel at `p`.
@@ -121,7 +123,8 @@ pub fn draw(p: &egui::Painter, vp: &Viewport, f: &Frame, look: Look) {
         })
         .collect();
     let (disc_fill, disc_line) = match look {
-        Look::Hover => (Color32::from_rgba_unmultiplied(225, 225, 20, 90), PRESELECT),
+        Look::Hover => (Color32::from_rgba_unmultiplied(225, 225, 20, 60), PRESELECT),
+        Look::Error => (Color32::from_rgba_unmultiplied(230, 60, 50, 110), Color32::from_rgb(240, 90, 80)),
         Look::Selected => (Color32::from_rgba_unmultiplied(28, 173, 28, 100), SELECT),
         Look::Ghost => (Color32::from_rgba_unmultiplied(128, 128, 128, 70), Color32::from_rgba_unmultiplied(200, 200, 200, 120)),
         Look::Normal => (Color32::from_rgba_unmultiplied(128, 128, 128, 110), Color32::from_rgba_unmultiplied(170, 170, 170, 160)),
@@ -130,11 +133,13 @@ pub fn draw(p: &egui::Painter, vp: &Viewport, f: &Frame, look: Look) {
         p.add(egui::Shape::convex_polygon(disc.clone(), disc_fill, Stroke::NONE));
         let mut ring = disc;
         ring.push(ring[0]);
-        p.add(egui::Shape::line(ring, Stroke::new(1.0, disc_line)));
+        let w = if matches!(look, Look::Hover | Look::Selected | Look::Error) { 2.5 } else { 1.0 };
+        p.add(egui::Shape::line(ring, Stroke::new(w, disc_line)));
     }
     let glow = match look {
         Look::Hover => Some(PRESELECT),
         Look::Selected => Some(SELECT),
+        Look::Error => Some(Color32::from_rgb(240, 90, 80)),
         _ => None,
     };
     for (axis, col) in [(f.x, X_COLOR), (f.y, Y_COLOR), (f.z, Z_COLOR)] {
@@ -152,6 +157,15 @@ pub fn draw(p: &egui::Painter, vp: &Viewport, f: &Frame, look: Look) {
         p.add(egui::Shape::convex_polygon(vec![tip, tip - n * 9.0 + side, tip - n * 9.0 - side], fade(col), Stroke::NONE));
     }
     p.circle(o, 3.5, if look == Look::Ghost { Color32::from_gray(200) } else { Color32::WHITE }, Stroke::new(1.0, Color32::from_gray(40)));
+}
+
+/// A small dark tag with `text` next to a triad (what a click would pick).
+pub fn label(p: &egui::Painter, vp: &Viewport, f: &Frame, text: &str) {
+    let Some(o) = vp.world_to_screen(f.origin) else { return };
+    let g = p.layout_no_wrap(text.to_string(), egui::FontId::proportional(12.0), Color32::WHITE);
+    let r = egui::Rect::from_min_size(o + egui::vec2(14.0, 10.0), g.size() + egui::vec2(10.0, 6.0));
+    p.rect(r, 3.0, Color32::from_rgba_unmultiplied(20, 20, 20, 215), Stroke::new(1.0, Color32::from_gray(80)), egui::StrokeKind::Inside);
+    p.galley(r.min + egui::vec2(5.0, 3.0), g, Color32::WHITE);
 }
 
 /// Small dots at the other inference points of the hovered element (Onshape shows them).

@@ -205,7 +205,7 @@ pub fn feature_icon(k: &FeatureKind) -> &'static str {
         FeatureKind::AdditivePipe(_) => "PartDesign_AdditivePipe",
         FeatureKind::SubtractivePipe(_) => "PartDesign_SubtractivePipe",
         FeatureKind::Hole(_) => "PartDesign_Hole",
-        FeatureKind::MateConnector(_) => "Std_CoordinateSystem",
+        FeatureKind::MateConnector(_) => "PartDesign_CoordinateSystem",
     }
 }
 

@@ -380,7 +380,7 @@ impl App {
                 ui.add_space(8.0);
             }
             if matches!(f.kind, FeatureKind::MateConnector(_)) {
-                task_box(ui, "mate_ref", "Std_CoordinateSystem", "Origin", |ui| {
+                task_box(ui, "mate_ref", "PartDesign_CoordinateSystem", "Origin", |ui| {
                     ui.spacing_mut().item_spacing.y = 6.0;
                     self.mate_ref_box(ui, id);
                 });

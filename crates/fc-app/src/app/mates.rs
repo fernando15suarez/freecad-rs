@@ -155,6 +155,8 @@ impl App {
         if let (Some(h), Some(_)) = (&self.mate_hover, editing) {
             mate_ui::draw_points(&p, &self.vp, &h.points, Some(h.chosen));
             mate_ui::draw(&p, &self.vp, &h.frame, Look::Ghost);
+            let geom = self.solid_before(editing).map(|(_, s)| mate_ui::element_geom(&s, h.kind, h.index)).unwrap_or(-1);
+            mate_ui::label(&p, &self.vp, &h.frame, &format!("{}{} · {}", h.kind.prefix(), h.index, mate_ui::infer_label(h.kind, geom, h.infer).to_lowercase()));
         }
     }
 
@@ -175,7 +177,7 @@ impl App {
             }
         };
         ui.horizontal_wrapped(|ui| {
-            ui.add(crate::icons::image(ui.ctx(), "Std_CoordinateSystem", 16.0));
+            ui.add(crate::icons::image(ui.ctx(), "PartDesign_CoordinateSystem", 16.0));
             ui.label(RichText::new("Click a face, edge or vertex in the 3D view. The connector snaps to the nearest inferred point (dots).").color(Color32::from_gray(185)));
         });
         ui.add_space(4.0);

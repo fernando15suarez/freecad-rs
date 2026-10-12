@@ -194,7 +194,7 @@ impl App {
             Act::LeaveSketch => ("Sketcher_LeaveSketch", "Leave Sketch", "Finishes editing the active sketch", String::new(), self.editor.is_some()),
             Act::ViewSketch => ("Sketcher_ViewSketch", "View Sketch", "Sets the camera orientation perpendicular to the sketch plane and fits it", "Q, P".into(), self.editor.is_some()),
             Act::About => ("help-browser", "About freecad-rs", "", String::new(), true),
-            Act::MateConnector => ("Std_CoordinateSystem", "Mate Connector", "Creates an Onshape-style mate connector: pick a face, edge or vertex; it snaps to the inferred center, midpoint or vertex. Assemblies join parts by their connectors.", String::new(), idle && self.active_part().is_some()),
+            Act::MateConnector => ("PartDesign_CoordinateSystem", "Mate Connector", "Creates an Onshape-style mate connector: pick a face, edge or vertex; it snaps to the inferred center, midpoint or vertex. Assemblies join parts by their connectors.", String::new(), idle && self.active_part().is_some()),
             Act::NewPart => ("PartDesign_Body", "New Part", "Creates a new part (Body) in the document and opens it", String::new(), idle),
             Act::NewAssembly => ("Geoassembly", "Create Assembly", "Creates a new assembly in the document and opens it", String::new(), idle),
             Act::AsmInsert => ("Assembly_InsertLink", "Insert Component", "Inserts a part of the document into the assembly (several times if needed)", "I".into(), idle && self.active_assembly().is_some()),
@@ -216,7 +216,7 @@ impl App {
                 };
                 (icon, title, tip, String::new(), idle && self.active_assembly().is_some())
             }
-            Act::AsmConnector => ("Std_CoordinateSystem", "Assembly Mate Connector", "Adds a mate connector to the assembly, anchored to a part's face, edge or vertex", String::new(), idle && self.active_assembly().is_some()),
+            Act::AsmConnector => ("PartDesign_CoordinateSystem", "Assembly Mate Connector", "Adds a mate connector to the assembly, anchored to a part's face, edge or vertex", String::new(), idle && self.active_assembly().is_some()),
             Act::Solve => ("Assembly_SolveAssembly", "Solve Assembly", "Solves the assembly's joints again", String::new(), idle && self.active_assembly().is_some()),
             Act::Workbench(true) => ("AssemblyWorkbench", "Assembly", "Assembly workbench: parts, joints and mate connectors", String::new(), idle),
             Act::Workbench(false) => ("PartDesignWorkbench", "Part Design", "Part Design workbench: sketches and features of a part", String::new(), idle),
