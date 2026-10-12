@@ -1,0 +1,19 @@
+[package]
+name = "fc-assembly"
+version = "0.1.0"
+edition = "2021"
+license = "LGPL-2.1-or-later"
+description = "Assemblies for freecad-rs: multi-part workspaces, joints/mates and a 3D constraint solver"
+
+[dependencies]
+fc-part = { path = "../fc-part" }
+fc-occt = { path = "../fc-occt" }
+nalgebra = "0.33"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+thiserror = "2"
+zip = { version = "4.6", default-features = false, features = ["deflate"] }
+roxmltree = "0.20"
+
+[dev-dependencies]
+fc-sketch = { path = "../fc-sketch" }

@@ -739,6 +739,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "fc-assembly"
+version = "0.1.0"
+dependencies = [
+ "fc-occt",
+ "fc-part",
+ "fc-sketch",
+ "nalgebra",
+ "roxmltree",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "zip",
+]
+
+[[package]]
 name = "fc-occt"
 version = "0.1.0"
 dependencies = [
