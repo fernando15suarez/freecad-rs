@@ -377,6 +377,19 @@ impl App {
         self.vp.world_to_screen(f.origin)
     }
 
+    /// Is a pickable connector triad under `pos` (either workbench)?
+    pub(super) fn triad_under(&self, pos: egui::Pos2) -> bool {
+        if self.active_assembly().is_some() {
+            let mut t = self.asm_connectors();
+            if matches!(self.asm.task, Some(AsmTask::Joint(_))) {
+                t.extend(self.part_connectors());
+            }
+            t.iter().any(|(_, f, _)| mate_ui::hit(&self.vp, f, pos).is_some())
+        } else {
+            self.mate_task().is_none() && self.editor.is_none() && !self.picking && self.connector_at(pos).is_some()
+        }
+    }
+
     // ------------------------------------------------------------------ hover
 
     /// What the cursor is over: a connector triad (when they are pickable) or snapped geometry.
@@ -644,7 +657,9 @@ impl App {
         let empty = self.asm_ref().is_some_and(|a| a.instances.is_empty());
         if empty {
             self.place_instance(p, fc_assembly::Frame::IDENTITY);
+            // leave room around the first part for placing the next ones
             self.vp.fit_all();
+            self.vp.zoom(0.55);
         } else {
             self.asm.pending = Some(p);
             self.status = format!("Click in the 3D view to place {}", self.part_name(p));

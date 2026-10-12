@@ -1,0 +1,39 @@
+# Part Design: a mate connector on the rim of a counterbored hole (Onshape-style inference).
+wait 5
+demo
+wait 5
+expect features 6
+at ui tb:mate
+click
+wait 5
+expect task true
+expect anchor Origin
+key V
+key F
+wait 3
+# hover the top rim of the counterbore (radius 5.5 around (15, 0, 10)): preview at its center
+at world 15 5.5 10
+wait 4
+shot OUT/mate_hover.png
+click
+wait 4
+expect anchor Edge
+expect connector MateConnector 15 0 10
+at ui mate:flip
+click
+wait 3
+expect connector MateConnector 15 0 10
+shot OUT/mate_task.png
+at ui task:ok
+click
+wait 3
+expect task false
+expect features 7
+shot OUT/mate_done.png
+key Z cmd
+wait 4
+expect features 6
+key Z shift cmd
+wait 4
+expect features 7
+quit

@@ -123,6 +123,8 @@ pub struct Viewport {
     pub right_inset: f32,
     /// The primary-button drag belongs to the app (e.g. dragging an assembly part): no orbit.
     pub capture_primary: bool,
+    /// Something drawn over the view (a connector triad) is under the cursor: no hover pick.
+    pub suppress_hover: bool,
 }
 
 impl Viewport {
@@ -151,6 +153,7 @@ impl Viewport {
             instant: false,
             right_inset: 0.0,
             capture_primary: false,
+            suppress_hover: false,
         }
     }
 
@@ -179,6 +182,10 @@ impl Viewport {
             return None;
         }
         self.pick_at(pos)
+    }
+    /// Zoom about the view center (factor > 1 zooms in).
+    pub fn zoom(&mut self, factor: f64) {
+        self.cam.dist = (self.cam.dist / factor).clamp(1e-4, 1e7);
     }
     pub fn rect(&self) -> Rect {
         self.rect
@@ -746,13 +753,13 @@ impl Viewport {
         if self.sketch_mode {
             self.forced_hover = None;
             self.set_hover(None);
-        } else if response.hovered() && !dragging {
+        } else if response.hovered() && !dragging && !self.suppress_hover {
             if let Some(p) = ptr.filter(|p| rect.contains(*p)) {
                 hovered = self.pick_at(p);
                 self.forced_hover = None;
             }
             self.set_hover(hovered.clone());
-        } else if self.forced_hover.is_none() && (dragging || !response.hovered()) {
+        } else if self.forced_hover.is_none() && (dragging || !response.hovered() || self.suppress_hover) {
             self.set_hover(None);
         }
         if self.forced_hover.is_some() {

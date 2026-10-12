@@ -137,7 +137,7 @@ impl App {
             .collect()
     }
 
-    fn connector_at(&self, pos: egui::Pos2) -> Option<FeatureId> {
+    pub(super) fn connector_at(&self, pos: egui::Pos2) -> Option<FeatureId> {
         self.part_triads().into_iter().filter_map(|(id, f)| mate_ui::hit(&self.vp, &f, pos).map(|d| (d, id))).min_by(|a, b| a.0.total_cmp(&b.0)).map(|x| x.1)
     }
 

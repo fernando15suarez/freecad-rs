@@ -1,0 +1,92 @@
+# Assembly: insert two parts, ground one, revolute joint from two mate connectors, drag the
+# free part: it only turns about the joint axis (1 DOF).
+wait 5
+asmdemo
+wait 5
+at ui workbench
+click
+wait 3
+at ui wb:Assembly
+click
+wait 6
+expect tab assembly Assembly
+at ui tb:insert
+click
+wait 3
+at ui insert:Plate
+click
+wait 4
+expect instances 1
+expect grounded Plate true
+at ui insert:Arm
+click
+wait 2
+at world 0 -45 0
+wait 3
+shot OUT/asm_insert_ghost.png
+click
+wait 4
+expect instances 2
+at ui task:ok
+click
+wait 3
+expect asmtask false
+# FreeCAD grounds the first part; toggle it off and on again
+at ui tree:Plate
+click
+wait 2
+at ui tb:ground
+click
+wait 3
+expect grounded Plate false
+at ui tb:ground
+click
+wait 3
+expect grounded Plate true
+expect dof 6
+# revolute joint between the two connectors
+at ui tb:joint:revolute
+click
+wait 4
+expect asmtask true
+at triad Plate.MateConnector
+wait 3
+click
+wait 3
+at triad Arm.MateConnector
+wait 3
+shot OUT/asm_joint_pick.png
+click
+wait 5
+expect joints 1
+expect dof 1
+shot OUT/asm_joint_task.png
+at ui task:ok
+click
+wait 4
+expect asmtask false
+expect solved true
+expect dof 1
+shot OUT/asm_revolute.png
+# drag the far end of the arm
+mark
+at inst Arm 40 0 5
+down
+wait 2
+at world 30 20 15
+wait 2
+at world 15 30 15
+wait 2
+at world 0 25 15
+wait 2
+shot OUT/asm_drag.png
+up
+wait 4
+expect moved Arm true
+expect fixed_point Arm 0 0 0
+expect solved true
+expect dof 1
+key Z cmd
+wait 4
+expect moved Arm false
+quit

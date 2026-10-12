@@ -1,0 +1,57 @@
+# Assembly: a Fixed joint made by clicking geometry directly (FreeCAD style), with Reverse.
+wait 5
+asmdemo
+wait 5
+at ui workbench
+click
+wait 3
+at ui wb:Assembly
+click
+wait 6
+at ui taskact:insert
+click
+wait 3
+at ui insert:Plate
+click
+wait 4
+at ui insert:Arm
+click
+wait 2
+at world 0 -45 0
+wait 3
+click
+wait 4
+at ui task:ok
+click
+wait 3
+expect instances 2
+at ui tb:joint:fixed
+click
+wait 4
+# the plate's top face, away from its connector: snaps to the face centroid
+at world -15 10 10
+wait 3
+shot OUT/asm_fixed_hover.png
+click
+wait 3
+# the arm's top face near its hole
+at inst Arm 4 2 5
+wait 3
+click
+wait 5
+expect joints 1
+expect dof 0
+at ui joint:reverse
+click
+wait 5
+expect dof 0
+expect solved true
+shot OUT/asm_fixed_task.png
+at ui task:ok
+click
+wait 4
+expect joint Fixed Fixed
+expect refs Geometry Geometry
+expect solved true
+shot OUT/asm_fixed.png
+quit

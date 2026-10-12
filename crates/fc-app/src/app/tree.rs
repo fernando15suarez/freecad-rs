@@ -219,7 +219,7 @@ impl App {
             }
             // another part: a closed Body row; double-click opens it in Part Design
             let n = self.ws.part(pid).map(|p| p.doc.features.len()).unwrap_or(0);
-            let r = tree_row(ui, RowSpec { reg: format!("tree:{pname}"), depth: 1, expander: Some(false), eye: None, eye_space: true, icon: "PartDesign_Body", badge: None, label: RichText::new(&pname), selected: false, tip: format!("{pname}: part with {n} features\nDouble-click to open it in Part Design") }, None);
+            let r = tree_row(ui, RowSpec { reg: format!("tree:part:{pname}"), depth: 1, expander: Some(false), eye: None, eye_space: true, icon: "PartDesign_Body", badge: None, label: RichText::new(&pname), selected: false, tip: format!("{pname}: part with {n} features\nDouble-click to open it in Part Design") }, None);
             if (r.double || r.expand) && all_idle {
                 acts.push(TreeAct::OpenPart(pid));
             }

@@ -1356,6 +1356,16 @@ impl App {
                         _ => None,
                     }),
                     "asmtask" => Some(self.asm.task.is_some().to_string()),
+                    "refs" => self.asm_ref().and_then(|a| a.joints.last()).map(|j| {
+                        let k = |r: &fc_assembly::JointRef| match r {
+                            fc_assembly::JointRef::PartConnector { .. } => "PartConnector",
+                            fc_assembly::JointRef::AssemblyConnector(_) => "AssemblyConnector",
+                            fc_assembly::JointRef::Geometry { .. } => "Geometry",
+                            fc_assembly::JointRef::Frame { .. } => "Frame",
+                            fc_assembly::JointRef::Origin { .. } => "Origin",
+                        };
+                        format!("{} {}", k(&j.a), k(&j.b))
+                    }),
                     "tab" => Some(match self.tab {
                         Tab::Part(p) => format!("part {}", self.part_name(p)),
                         Tab::Assembly(a) => format!("assembly {}", self.ws.assembly(a).map(|x| x.name.clone()).unwrap_or_default()),
@@ -1620,6 +1630,8 @@ impl eframe::App for App {
             if self.active_assembly().is_some() {
                 self.asm_pre_view(ctx);
             }
+            // a connector triad under the cursor takes the hover from the geometry behind it
+            self.vp.suppress_hover = ctx.input(|i| i.pointer.hover_pos()).is_some_and(|p| self.triad_under(p));
             let r = self.vp.ui(ui);
             self.view_rect = r.response.rect;
             self.hovered = r.hovered.clone();
