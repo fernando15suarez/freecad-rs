@@ -8,6 +8,9 @@ on mate connectors.
 - `Workspace` (the `.fcrs` v2 project file): `parts: Vec<PartEntry { id, name, doc: fc_part::Document }>`,
   `assemblies: Vec<Assembly>`. `Workspace::from_json` also loads an old single-body document (v1),
   which becomes a one-part workspace.
+- `PartEntry` also carries optional `meta: PartMeta { part_number, description, material, density (kg/m³),
+  mass (kg), color }` for the BOM and STEP colours, and `brep` for parts imported from STEP (no features;
+  `PartEntry::shape()` returns the body's result or the imported solid).
 - `Assembly`: `instances` (`Instance { id, name, of: InstanceOf::Part | Assembly, placement: Frame, grounded, visible }`),
   `connectors` (mate connectors created in the assembly, anchored to an instance), `joints`, optional
   `exploded_views`.
@@ -120,5 +123,117 @@ DOF (`fc_assembly::fcstd`).
 - **FCStd import.** Members that are PartDesign Bodies (directly, via App::Link or inside an App::Part)
   import their bodies; other members (Part::Box, ...) are placeholders without geometry. The Distance
   variant is guessed from the element names.
-- **Not done yet.** Sub-assemblies as instances (geometry references into them), simulations and motions,
-  BOM, and exploded-view animation.
+- **Not done yet.** Flexible sub-assemblies, simulations and motions.
+
+## Sub-assemblies
+
+An instance can place another assembly (`InstanceOf::Assembly`, added with
+`Workspace::add_sub_assembly(parent, name, sub, placement)`, which refuses cycles). It is posed **rigidly**:
+the solver treats it as one body, with its own instances at their stored placements. FreeCAD 1.1 also
+has flexible sub-assemblies; we do not have them yet.
+
+- **Geometry references** go through the sub-assembly by instance names, FreeCAD's sub-name style:
+  `JointRef::geometry(sub_instance, "Bolt.Face6")`, nested as `"Inner.Bolt.Face6"`. The second pick of a
+  two-element selection may carry the same prefix. Part mate connectors inside a sub-assembly cannot be
+  referenced (use an assembly connector or a geometry path).
+- `Workspace::leaves(asm)` flattens the tree to `LeafInstance { path, name: "Sub.Bolt", part, placement, visible }`
+  with placements in the top assembly's coordinates.
+- `leaf_shape` and `instance_shape(asm, path)` give posed solids. A sub-assembly instance gives the
+  compound of its parts.
+- BOM, STEP, STL and interference all recurse through sub-assemblies.
+
+## STEP and STL export/import
+
+`Workspace::export_step(asm, path, &StepExportOptions { schema: Ap214 | Ap242, colors, visible_only })`
+builds an XDE document (`XCAFApp_Application`, "MDTV-XCAF") through fc-occt's `XdeDoc`:
+
+- each part is written once as a shape label (`XCAFDoc_ShapeTool::AddShape`);
+- each (sub-)assembly becomes an assembly label whose components (`AddComponent` with a `TopLoc_Location`)
+  place its instances;
+- product names are the part and assembly names, and the NAUO names are the instance names;
+- the part colour is written when `meta.color` is set.
+
+The file is written with `STEPCAFControl_Writer`.
+
+`Workspace::import_step(path)` reads with `STEPCAFControl_Reader`:
+
+- every part label becomes an imported part (its solid is stored as BREP text in the project);
+- every assembly label becomes an `Assembly`, with one instance per component;
+- a nested assembly becomes an `InstanceOf::Assembly` instance;
+- a file without an assembly, or with several roots, is wrapped in an assembly named after the file.
+
+Nothing is grounded and there are no joints.
+
+`Workspace::export_stl(asm, path, deflection, visible_only)` writes the posed, flattened assembly as one
+binary STL.
+
+**FreeCAD parity** (`tools/parity/assembly/step_assembly.py`):
+
+- **FreeCAD reads our files.** Our AP214 and AP242 exports of the test assembly import in FreeCAD 1.1.3
+  (`Import.insert`) as `App::Part "Main"` containing the plate, two `App::Part "BoltPair"` (one turned
+  90°) and a loose bolt. That is 6 solids, 27500 mm³ in total, with every bounding box equal to ours.
+- **We read FreeCAD's files.** The script also writes `freecad_asm.step` (App::Part with App::Links to a
+  shared sub-part). `tests/tools.rs::freecad_step_import` reads it back with the right tree
+  (Top → Plate, Pair1, Pair2 → PinA, PinB), one shared Pin part, and the right volumes and boxes.
+
+## Interference and clearance
+
+`Workspace::interferences(asm, &InterferenceOptions { min_volume, tolerance, visible_only })` checks every
+pair of posed part instances, with sub-assemblies flattened:
+
+1. A bounding-box prefilter skips the pair unless the boxes overlap by more than `tolerance` on every
+   axis.
+2. A boolean common runs on the pairs that pass.
+3. A pair is reported when the common's volume is above `min_volume` (1e-6 mm³ by default), so solids
+   that only touch at a face are ignored.
+
+Each `Interference` has the two leaves, the overlap volume and the common solid (in assembly coordinates)
+for highlighting.
+
+`Workspace::clearance(asm, path_a, path_b)` is the minimum distance (`BRepExtrema_DistShapeShape`) between
+two instances or sub-assemblies, with the closest points. It is 0 when they touch or overlap. FreeCAD has
+no built-in equivalent; the behaviour follows Onshape and SolidWorks.
+
+## Bill of materials
+
+`Workspace::bom(asm, &BomOptions { detail_sub_assemblies, flatten, visible_only })` follows FreeCAD's
+`Assembly::BomObject`:
+
+- Siblings that place the same part or sub-assembly are grouped into one row with a quantity.
+- Rows are numbered `1`, `2`, `2.1`, ...
+- With `detail_sub_assemblies` (the default), a sub-assembly's contents are listed indented under it, with
+  quantities per sub-assembly.
+- `flatten` gives one row per distinct part with its total count across the whole tree.
+
+Each row has `name`, `part_number`, `description`, `material`, `quantity` and `unit_mass`. The unit mass is
+`meta.mass`, or volume × `meta.density`; for a sub-assembly it is the sum over its parts.
+
+`bom_csv(&rows)` writes the CSV with these columns: Index, Name, Part Number, Description, Material,
+Quantity, Unit Mass (kg) and Total Mass (kg). Fields are quoted per RFC 4180. FreeCAD's spreadsheet export
+has only Index, Name, Description, File Name and Quantity.
+
+## Exploded views
+
+`Assembly::exploded_views` holds `ExplodedView { name, steps }`. Each `ExplodeStep { instances, kind, transform }`
+mirrors FreeCAD's `ExplodedViewStep`:
+
+- **`Normal`** sets `placement = transform * placement`, where `transform` is FreeCAD's
+  `MovementTransform` in world coordinates.
+  - `ExplodeStep::translate(ids, dir, distance)` builds a move.
+  - `ExplodeStep::rotate(ids, center, axis, degrees)` builds a rotation as
+    `Placement(center, rot) * Placement(center)⁻¹`, like `setMovementAngle`.
+- **`Radial`**, built with `ExplodeStep::radial(ids, distance)`, moves each instance's bounding-box
+  centre away from the assembly's centre: `base += (centre − assembly centre) · 4·distance / diagonal`.
+
+Steps apply in order, each starting from the result of the previous ones.
+
+`Workspace::exploded(asm, view, t)` evaluates a view at animation time `t ∈ [0, 1]` using the real bounding
+boxes:
+
+- The steps play one after another, and a partial step follows the transform's screw motion
+  (`Frame::pow`), so a rotation keeps its pivot.
+- It returns `Exploded { placements, lines }`; the lines are trails of the moved centres.
+- It never changes the solved placements.
+
+`Assembly::exploded_placements(view, t)` is the geometry-free variant: instance origins stand in for the
+centres, and the radial size falls back to 100 (FreeCAD's headless fallback).
