@@ -23,9 +23,9 @@
 
 use crate::dual::{self, dv_c, D, DV};
 use crate::frame::{Frame, M3};
-use crate::geom::{infer_frame, ImplicitPoint, RefKind};
+use crate::geom::{infer_frame, ElementGeom, ImplicitPoint, RefKind};
 use crate::joint::{distance_mode, is_zero_angle, DistanceMode, Joint, JointKind, JointRef, Sense};
-use crate::model::{Assembly, InstanceId, InstanceOf, JointId, PartResolver};
+use crate::model::{Assembly, InstanceId, InstanceOf, JointId, PartId, PartResolver};
 use fc_part::placement::{dot, norm, sub};
 use fc_part::V3;
 use nalgebra::{DMatrix, DVector};
@@ -121,12 +121,32 @@ pub(crate) struct Side {
     pub kind: RefKind,
 }
 
+/// Follows a sub-element path into sub-assemblies: for an instance of an assembly,
+/// `element` is `"<instance name>.<element>"` (recursively, like FreeCAD's
+/// `SubAsm.Part.Face3`). Returns the leaf part, the leaf's frame in the outer instance's
+/// coordinates and the leaf element name.
+pub(crate) fn descend<'e>(res: &dyn PartResolver, of: InstanceOf, element: &'e str) -> Result<(PartId, Frame, &'e str), String> {
+    let mut of = of;
+    let mut el = element;
+    let mut acc = Frame::IDENTITY;
+    for _ in 0..64 {
+        match of {
+            InstanceOf::Part(p) => return Ok((p, acc, el)),
+            InstanceOf::Assembly(a) => {
+                let sub = res.sub_assembly(a).ok_or_else(|| format!("sub-assembly {a} not available"))?;
+                let (name, rest) = el.split_once('.').ok_or_else(|| format!("{el}: references into a sub-assembly need an instance path (\"Part.Face1\")"))?;
+                let inst = sub.instance_by_name(name).ok_or_else(|| format!("no instance {name} in {}", sub.name))?;
+                acc = acc.mul(&inst.placement);
+                of = inst.of;
+                el = rest;
+            }
+        }
+    }
+    Err("sub-assemblies nest too deeply (cycle?)".to_string())
+}
+
 pub(crate) fn resolve_ref(asm: &Assembly, res: &dyn PartResolver, r: &JointRef, ignore_vertex: bool) -> Result<Side, String> {
     let idx = |id: InstanceId| asm.instances.iter().position(|i| i.id == id).ok_or_else(|| format!("no instance {id}"));
-    let part_of = |i: usize| match asm.instances[i].of {
-        InstanceOf::Part(p) => Ok(p),
-        InstanceOf::Assembly(_) => Err("geometry references into sub-assemblies are not supported yet".to_string()),
-    };
     match r {
         JointRef::Frame { instance, local } => Ok(Side { inst: idx(*instance)?, local: *local, kind: RefKind::Frame }),
         JointRef::Origin { instance } => Ok(Side { inst: idx(*instance)?, local: Frame::IDENTITY, kind: RefKind::Frame }),
@@ -136,26 +156,35 @@ pub(crate) fn resolve_ref(asm: &Assembly, res: &dyn PartResolver, r: &JointRef, 
         }
         JointRef::PartConnector { instance, connector } => {
             let i = idx(*instance)?;
-            let p = part_of(i)?;
+            let p = match asm.instances[i].of {
+                InstanceOf::Part(p) => p,
+                InstanceOf::Assembly(_) => return Err("mate connectors of parts inside a sub-assembly: use an assembly connector or a geometry path".to_string()),
+            };
             let f = res.connector_frame(p, *connector).ok_or_else(|| format!("mate connector {connector} not found"))?;
             Ok(Side { inst: i, local: f, kind: RefKind::Frame })
         }
         JointRef::Geometry { instance, element, implicit } => {
             let i = idx(*instance)?;
-            let p = part_of(i)?;
+            let (p, acc, element) = descend(res, asm.instances[i].of, element)?;
+            // The second pick may carry the same path prefix.
+            let second = |n: &str| -> Result<ElementGeom, String> {
+                let leaf = match descend(res, asm.instances[i].of, n) {
+                    Ok((q, f, e)) if q == p && f.is_same(&acc, 1e-12) => e,
+                    _ => n.rsplit('.').next().unwrap_or(n),
+                };
+                res.element(p, leaf).ok_or_else(|| format!("element {n} not found"))
+            };
             if let ImplicitPoint::Infer(mode) = implicit {
                 let f = res.infer_frame(p, element, *mode).ok_or_else(|| format!("cannot infer a frame on {element}"))?;
                 let kind = res.element(p, element).map(|g| g.kind()).unwrap_or(RefKind::Frame);
-                return Ok(Side { inst: i, local: f, kind });
+                return Ok(Side { inst: i, local: acc.mul(&f), kind });
             }
             let g = res.element(p, element).ok_or_else(|| format!("element {element} not found"))?;
             let pg = match implicit {
                 ImplicitPoint::Center | ImplicitPoint::Infer(_) => None,
-                ImplicitPoint::Vertex(n) | ImplicitPoint::EdgeCenter(n) => {
-                    Some(res.element(p, n).ok_or_else(|| format!("element {n} not found"))?)
-                }
+                ImplicitPoint::Vertex(n) | ImplicitPoint::EdgeCenter(n) => Some(second(n)?),
             };
-            Ok(Side { inst: i, local: infer_frame(&g, pg.as_ref(), ignore_vertex), kind: g.kind() })
+            Ok(Side { inst: i, local: acc.mul(&infer_frame(&g, pg.as_ref(), ignore_vertex)), kind: g.kind() })
         }
     }
 }

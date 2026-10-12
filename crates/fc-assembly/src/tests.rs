@@ -389,7 +389,7 @@ fn serialization_roundtrip() {
         Joint::new(JointKind::Distance { distance: 3.0, mode: DistanceMode::Auto }, JointRef::Origin { instance: a }, JointRef::PartConnector { instance: b, connector: 4 })
             .with_limits(Limits { length_min: Some(1.0), ..Default::default() }),
     );
-    asm.exploded_views.push(ExplodedView { name: "E".into(), steps: vec![ExplodeStep { instances: vec![b], translation: [0.0, 0.0, 10.0], rotation: None }] });
+    asm.exploded_views.push(ExplodedView { name: "E".into(), steps: vec![ExplodeStep::translate(vec![b], [0.0, 0.0, 1.0], 10.0), ExplodeStep::radial(vec![a, b], 5.0)] });
     let s = ws.to_json();
     let back = Workspace::from_json(&s).unwrap();
     assert_eq!(back.to_json(), s);

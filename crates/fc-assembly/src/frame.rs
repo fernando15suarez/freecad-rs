@@ -150,6 +150,33 @@ impl Frame {
     pub fn flipped(&self) -> Frame {
         self.mul(&Frame::rotation([1.0, 0.0, 0.0], std::f64::consts::PI))
     }
+    /// Row-major 3x4 `[R | t]` (OCCT's `gp_Trsf` layout, used by fc-occt).
+    pub fn to_matrix34(&self) -> [f64; 12] {
+        let m = self.matrix();
+        let p = self.pos;
+        [m[0][0], m[1][0], m[2][0], p[0], m[0][1], m[1][1], m[2][1], p[1], m[0][2], m[1][2], m[2][2], p[2]]
+    }
+    pub fn from_matrix34(m: &[f64; 12]) -> Frame {
+        Frame::from_axes([m[3], m[7], m[11]], [[m[0], m[4], m[8]], [m[1], m[5], m[9]], [m[2], m[6], m[10]]])
+    }
+    /// The fraction `f` of this rigid motion along its screw axis (`f = 0` is the identity,
+    /// `f = 1` is `self`, and `pow(0.5)` applied twice gives `self`). Used to animate
+    /// exploded-view steps.
+    pub fn pow(&self, f: f64) -> Frame {
+        let w = self.rotation_vector();
+        let th = norm(w);
+        if th < 1e-12 {
+            return Frame::translation(scale(self.pos, f));
+        }
+        let u = scale(w, 1.0 / th);
+        let p = self.pos;
+        let along = scale(u, fc_part::placement::dot(p, u));
+        let perp = sub(p, along);
+        // Point on the screw axis: (I - R) c = perp with c ⟂ u.
+        let c = scale(add(perp, scale(cross(u, perp), 1.0 / (th * 0.5).tan())), 0.5);
+        let r = Frame::rotation(u, th * f);
+        Frame { pos: add(sub(c, r.rotate(c)), scale(along, f)), rot: r.rot }
+    }
 }
 
 pub fn quat_axis_angle(axis: V3, angle: f64) -> [f64; 4] {

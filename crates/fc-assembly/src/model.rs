@@ -17,12 +17,79 @@ pub type ConnectorId = u32;
 /// Current project-file version (v1 = a bare fc-part `Document`).
 pub const WORKSPACE_VERSION: u32 = 2;
 
-/// A part definition: one PartDesign body.
+/// A part definition: one PartDesign body, or a solid imported from a file (STEP).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PartEntry {
     pub id: PartId,
     pub name: String,
     pub doc: Document,
+    /// Bill-of-materials data (part number, description, material, density/mass, colour).
+    #[serde(default, skip_serializing_if = "PartMeta::is_empty")]
+    pub meta: PartMeta,
+    /// An imported solid (OCCT BREP text) used when the body has no features.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brep: Option<String>,
+    /// `brep` parsed (filled by [`PartEntry::set_imported_shape`], [`Workspace::recompute`]
+    /// and [`Workspace::from_json`]).
+    #[serde(skip)]
+    pub imported: Option<fc_occt::Shape>,
+}
+
+/// Optional part metadata, as FreeCAD's BOM reads it from part properties.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PartMeta {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub part_number: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub material: String,
+    /// Density in kg/m³ (FreeCAD materials' unit); mass = volume × density.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub density: Option<f64>,
+    /// Mass in kg, overriding volume × density.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mass: Option<f64>,
+    /// sRGB colour (0..1) for STEP export.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<[f64; 3]>,
+}
+
+impl PartMeta {
+    pub fn is_empty(&self) -> bool {
+        *self == PartMeta::default()
+    }
+}
+
+impl PartEntry {
+    pub fn new(id: PartId, name: &str, doc: Document) -> PartEntry {
+        PartEntry { id, name: name.to_string(), doc, meta: PartMeta::default(), brep: None, imported: None }
+    }
+    /// The part's solid: the body's result, or the imported solid.
+    pub fn shape(&self) -> Option<&fc_occt::Shape> {
+        self.doc.result().or(self.imported.as_ref())
+    }
+    /// Makes this an imported part (stored as BREP text in the project file).
+    pub fn set_imported_shape(&mut self, shape: fc_occt::Shape) {
+        self.brep = shape.to_brep_string().ok();
+        self.imported = Some(shape);
+    }
+    fn load_imported(&mut self) {
+        if self.imported.is_none() {
+            if let Some(b) = &self.brep {
+                self.imported = fc_occt::Shape::from_brep_string(b).ok();
+            }
+        }
+    }
+    /// Volume in mm³ (0 without geometry).
+    pub fn volume(&self) -> f64 {
+        self.shape().map(|s| s.volume()).unwrap_or(0.0)
+    }
+    /// Mass in kg: the explicit mass, else volume × density.
+    pub fn mass_kg(&self) -> Option<f64> {
+        self.meta.mass.or_else(|| self.meta.density.map(|d| self.volume() * 1e-9 * d))
+    }
 }
 
 /// A multi-part project: part definitions plus assemblies that instance them.
@@ -54,6 +121,14 @@ pub enum WorkspaceError {
     Json(#[from] serde_json::Error),
     #[error("unsupported workspace version {0}")]
     Version(u32),
+    #[error("assembly {0} would contain itself")]
+    Cycle(AssemblyId),
+    #[error("no such part or assembly: {0}")]
+    Missing(u32),
+    #[error("{0}")]
+    Occt(#[from] fc_occt::OcctError),
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
 }
 
 impl Workspace {
@@ -67,7 +142,15 @@ impl Workspace {
     }
     pub fn add_part(&mut self, name: &str, doc: Document) -> PartId {
         let id = self.alloc();
-        self.parts.push(PartEntry { id, name: name.to_string(), doc });
+        self.parts.push(PartEntry::new(id, name, doc));
+        id
+    }
+    /// Adds a part defined by an imported solid (no features).
+    pub fn add_imported_part(&mut self, name: &str, shape: fc_occt::Shape) -> PartId {
+        let id = self.alloc();
+        let mut p = PartEntry::new(id, name, Document::new());
+        p.set_imported_shape(shape);
+        self.parts.push(p);
         id
     }
     pub fn add_assembly(&mut self, name: &str) -> AssemblyId {
@@ -93,6 +176,7 @@ impl Workspace {
     pub fn recompute(&mut self) {
         for p in &mut self.parts {
             p.doc.recompute();
+            p.load_imported();
         }
     }
 
@@ -115,6 +199,7 @@ impl Workspace {
         }
         ws.version = WORKSPACE_VERSION;
         for p in &mut ws.parts {
+            p.load_imported();
             p.doc.next_id = p.doc.next_id.max(p.doc.features.iter().map(|f| f.id + 1).max().unwrap_or(0));
         }
         let max_id = ws
@@ -168,20 +253,61 @@ pub struct AssemblyConnector {
     pub anchor: Option<String>,
 }
 
-/// One step of an exploded view: move some instances (in world coordinates).
+/// How an exploded-view step moves its instances (FreeCAD's `ExplodedViewStep.MoveType`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExplodeKind {
+    /// `placement = transform * placement` (world-space move/rotation).
+    #[default]
+    Normal,
+    /// Push each instance away from the assembly's centre: its bounding-box centre moves by
+    /// `(centre - assembly centre) * 4 * distance / assembly diagonal`, where `distance` is
+    /// `|transform.pos|` (FreeCAD's radial explode).
+    Radial,
+}
+
+/// One step of an exploded view (FreeCAD's `ExplodedViewStep`): move some top-level
+/// instances of the assembly. Steps apply in order, each starting from where the previous
+/// ones left the instances.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExplodeStep {
     pub instances: Vec<InstanceId>,
-    pub translation: V3,
-    /// Optional rotation (axis, degrees) about the instances' own origins.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rotation: Option<(V3, f64)>,
+    #[serde(default)]
+    pub kind: ExplodeKind,
+    /// FreeCAD's `MovementTransform` (world coordinates).
+    pub transform: Frame,
+}
+
+impl ExplodeStep {
+    /// Move along `dir` by `distance`.
+    pub fn translate(instances: Vec<InstanceId>, dir: V3, distance: f64) -> ExplodeStep {
+        let d = fc_part::placement::scale(normalize(dir), distance);
+        ExplodeStep { instances, kind: ExplodeKind::Normal, transform: Frame::translation(d) }
+    }
+    /// Rotate by `degrees` about the world axis through `center` along `axis`
+    /// (FreeCAD's `setMovementAngle`: `Placement(center, rot) * Placement(center).inverse()`).
+    pub fn rotate(instances: Vec<InstanceId>, center: V3, axis: V3, degrees: f64) -> ExplodeStep {
+        let r = Frame { pos: center, rot: Frame::rotation(axis, degrees.to_radians()).rot };
+        ExplodeStep { instances, kind: ExplodeKind::Normal, transform: r.mul(&Frame::translation(center).inverse()) }
+    }
+    /// Radial explode by `distance`.
+    pub fn radial(instances: Vec<InstanceId>, distance: f64) -> ExplodeStep {
+        ExplodeStep { instances, kind: ExplodeKind::Radial, transform: Frame::translation([distance, 0.0, 0.0]) }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExplodedView {
     pub name: String,
     pub steps: Vec<ExplodeStep>,
+}
+
+/// An exploded view evaluated at some animation time.
+#[derive(Clone, Debug, Default)]
+pub struct Exploded {
+    /// Display placement of every top-level instance (unchanged ones included).
+    pub placements: HashMap<InstanceId, Frame>,
+    /// Trail lines (start, end) of moved instances' centres, one per moved instance and step.
+    pub lines: Vec<(V3, V3)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -300,22 +426,53 @@ impl Assembly {
             i.grounded = grounded;
         }
     }
-    /// Instance placements with an exploded view applied (for display only).
-    pub fn exploded_placements(&self, view: usize) -> HashMap<InstanceId, Frame> {
-        let mut out: HashMap<InstanceId, Frame> = self.instances.iter().map(|i| (i.id, i.placement)).collect();
-        if let Some(v) = self.exploded_views.get(view) {
-            for s in &v.steps {
-                for id in &s.instances {
-                    if let Some(f) = out.get_mut(id) {
-                        let mut g = *f;
-                        if let Some((axis, deg)) = s.rotation {
-                            let r = Frame::rotation(axis, deg.to_radians());
-                            g.rot = r.mul(&Frame { pos: [0.0; 3], rot: g.rot }).rot;
-                        }
-                        g.pos = fc_part::placement::add(g.pos, s.translation);
-                        *f = g;
+    /// Instance placements with exploded view `view` applied at animation time `t`
+    /// (0 = assembled, 1 = fully exploded; the steps play one after another). The solved
+    /// placements are not touched. Without geometry, instance origins stand in for their
+    /// bounding-box centres (radial steps); see [`Workspace::exploded`] for the real thing.
+    pub fn exploded_placements(&self, view: usize, t: f64) -> HashMap<InstanceId, Frame> {
+        self.explode_with(view, t, &|_| Some([0.0; 3]), None).placements
+    }
+
+    /// Evaluates an exploded view. `center(id)` is an instance's bounding-box centre in its
+    /// own coordinates, `bbox` the assembled bounding box (`[min, max]`); without one the
+    /// centre is the mean of the instance centres and the size 100 (FreeCAD's fallback).
+    pub fn explode_with(&self, view: usize, t: f64, center: &dyn Fn(InstanceId) -> Option<V3>, bbox: Option<[f64; 6]>) -> Exploded {
+        use fc_part::placement::{add, scale};
+        let mut out = Exploded { placements: self.instances.iter().map(|i| (i.id, i.placement)).collect(), lines: vec![] };
+        let Some(v) = self.exploded_views.get(view) else { return out };
+        let world_center = |id: InstanceId, pl: &Frame| center(id).map(|c| pl.transform_point(c)).unwrap_or(pl.pos);
+        let (com, size) = match bbox {
+            Some(b) => {
+                let d = sub([b[3], b[4], b[5]], [b[0], b[1], b[2]]);
+                (scale(add([b[0], b[1], b[2]], [b[3], b[4], b[5]]), 0.5), fc_part::placement::norm(d))
+            }
+            None => {
+                let n = self.instances.len().max(1) as f64;
+                let s = self.instances.iter().fold([0.0; 3], |a, i| add(a, world_center(i.id, &i.placement)));
+                (scale(s, 1.0 / n), 100.0)
+            }
+        };
+        let size = if size > 1e-9 { size } else { 100.0 };
+        let n = v.steps.len() as f64;
+        let s_time = t.clamp(0.0, 1.0) * n;
+        for (k, step) in v.steps.iter().enumerate() {
+            let f = (s_time - k as f64).clamp(0.0, 1.0);
+            if f <= 0.0 {
+                break;
+            }
+            for id in &step.instances {
+                let Some(pl) = out.placements.get(id).copied() else { continue };
+                let start = world_center(*id, &pl);
+                let new = match step.kind {
+                    ExplodeKind::Normal => step.transform.pow(f).mul(&pl),
+                    ExplodeKind::Radial => {
+                        let factor = 4.0 * fc_part::placement::norm(step.transform.pos) / size * f;
+                        Frame { pos: add(pl.pos, scale(sub(start, com), factor)), rot: pl.rot }
                     }
-                }
+                };
+                out.lines.push((start, world_center(*id, &new)));
+                out.placements.insert(*id, new);
             }
         }
         out
@@ -334,6 +491,11 @@ pub trait PartResolver {
     }
     /// Onshape-style inferred frame of a sub-element (see [`crate::ImplicitPoint::Infer`]).
     fn infer_frame(&self, _part: PartId, _element: &str, _infer: fc_part::Infer) -> Option<Frame> {
+        None
+    }
+    /// An assembly that an instance places as a rigid sub-assembly (geometry references
+    /// into it resolve through its instances).
+    fn sub_assembly(&self, _id: AssemblyId) -> Option<&Assembly> {
         None
     }
 }
@@ -423,12 +585,15 @@ impl PartResolver for Workspace {
         doc.connector_frame(connector).ok().map(|f| frame_from_mate(&f))
     }
     fn element(&self, part: PartId, element: &str) -> Option<ElementGeom> {
-        element_geom(self.part(part)?.doc.result()?, element)
+        element_geom(self.part(part)?.shape()?, element)
     }
     fn infer_frame(&self, part: PartId, element: &str, infer: fc_part::Infer) -> Option<Frame> {
-        let shape = self.part(part)?.doc.result()?;
+        let shape = self.part(part)?.shape()?;
         let (kind, index) = fc_part::TopoKind::parse(element)?;
         fc_part::mate::infer_frame(shape, kind, index, infer).ok().map(|f| frame_from_mate(&f))
+    }
+    fn sub_assembly(&self, id: AssemblyId) -> Option<&Assembly> {
+        self.assembly(id)
     }
 }
 
