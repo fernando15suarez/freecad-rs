@@ -52,7 +52,8 @@ fn main() {
             std::fs::create_dir_all(&occt).unwrap();
             let lock = std::fs::File::create(occt.join(".build.lock")).unwrap();
             lock.lock().unwrap();
-            if !occt.join("lib").join("libTKernel.a").exists() || !occt.join(PATCH_STAMP).exists() {
+            let kernel = if std::env::var("TARGET").unwrap_or_default().contains("msvc") { "TKernel.lib" } else { "libTKernel.a" };
+            if !occt.join("lib").join(kernel).exists() || !occt.join(PATCH_STAMP).exists() {
                 build_occt(&occt);
                 std::fs::write(occt.join(PATCH_STAMP), "").unwrap();
             }
@@ -62,16 +63,26 @@ fn main() {
     println!("cargo:rerun-if-changed=occt-patch");
     println!("cargo:rustc-link-search=native={}", occt.join("lib").display());
     for lib in OCCT_LIBS {
-        println!("cargo:rustc-link-lib=static={lib}");
+        println!("cargo:rustc-link-lib=static:-bundle={lib}");
     }
-    cxx_build::bridge("src/ffi.rs")
-        .file("cpp/shim.cpp")
-        .include(occt.join("include"))
-        .include("cpp")
-        .std("c++17")
-        .flag_if_supported("-Wno-deprecated-declarations")
-        .flag_if_supported("-Wno-unused-parameter")
-        .compile("fc-occt-shim");
+    let msvc = std::env::var("TARGET").unwrap_or_default().contains("msvc");
+    if msvc {
+        // OCCT's Windows code calls into these system DLLs (MSVC links its C++ runtime itself).
+        for lib in ["advapi32", "user32", "gdi32", "shell32", "ws2_32", "psapi", "wsock32"] {
+            println!("cargo:rustc-link-lib={lib}");
+        }
+    }
+    // Headers live in include/ (our build) or include/opencascade (some prebuilt installs).
+    let include = [occt.join("include/opencascade"), occt.join("include")].into_iter().find(|p| p.join("Standard.hxx").exists()).unwrap_or_else(|| occt.join("include"));
+    let mut b = cxx_build::bridge("src/ffi.rs");
+    b.file("cpp/shim.cpp").include(&include).include("cpp").std("c++17");
+    if msvc {
+        // OCCT is linked statically: without this its headers declare everything __declspec(dllimport).
+        b.define("OCCT_STATIC_BUILD", None).define("_USE_MATH_DEFINES", None).define("NOMINMAX", None).flag("/bigobj");
+    } else {
+        b.flag_if_supported("-Wno-deprecated-declarations").flag_if_supported("-Wno-unused-parameter");
+    }
+    b.compile("fc-occt-shim");
     println!("cargo:rerun-if-changed=src/ffi.rs");
     println!("cargo:rerun-if-changed=cpp/shim.cpp");
     println!("cargo:rerun-if-changed=cpp/shim.h");
