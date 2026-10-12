@@ -187,6 +187,7 @@ pub fn feature_icon(k: &FeatureKind) -> &'static str {
         FeatureKind::AdditivePipe(_) => "PartDesign_AdditivePipe",
         FeatureKind::SubtractivePipe(_) => "PartDesign_SubtractivePipe",
         FeatureKind::Hole(_) => "PartDesign_Hole",
+        FeatureKind::MateConnector(_) => "Std_CoordinateSystem",
     }
 }
 
@@ -203,6 +204,7 @@ pub fn feature_title(k: &FeatureKind) -> &'static str {
         FeatureKind::AdditivePipe(_) => "Additive Pipe",
         FeatureKind::SubtractivePipe(_) => "Subtractive Pipe",
         FeatureKind::Hole(_) => "Hole",
+        FeatureKind::MateConnector(_) => "Mate Connector",
     }
 }
 
@@ -1262,11 +1264,12 @@ impl App {
             }
             Step::DoubleClick => {
                 let b = egui::PointerButton::Primary;
+                // First click now, second click on the next frame (egui measures the gap).
                 raw.events.push(run.button_event(b, true));
                 raw.events.push(run.button_event(b, false));
-                raw.events.push(run.button_event(b, true));
+                run.pending.push(run.button_event(b, true));
                 run.pending.push(run.button_event(b, false));
-                run.wait = 1;
+                run.wait = 2;
             }
             Step::Key(key, modifiers) => {
                 raw.events.push(Event::ModifiersChanged(modifiers));
