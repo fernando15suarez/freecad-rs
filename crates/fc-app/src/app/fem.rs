@@ -1172,6 +1172,7 @@ impl App {
             self.rebuild_scene();
         }
         let Some(res) = finished else { return };
+        let solved = res.is_ok() && !mesh_only;
         self.fem.job = None;
         let d = &mut self.fem.docs[a];
         d.rt.elapsed = elapsed;
@@ -1215,6 +1216,13 @@ impl App {
             }
         }
         self.rebuild_scene();
+        if solved {
+            // fit the result into the space left of the color bar
+            let ri = self.vp.right_inset;
+            self.vp.right_inset = ri + 170.0;
+            self.vp.fit_all();
+            self.vp.right_inset = ri;
+        }
     }
 
     // ------------------------------------------------------------------ scene

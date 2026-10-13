@@ -344,7 +344,7 @@ pub fn yes_no(ui: &mut egui::Ui, v: &mut bool) -> bool {
 pub fn combo<T: PartialEq + Clone>(ui: &mut egui::Ui, id: &str, current: &mut T, options: &[(T, &str)], width: f32) -> bool {
     let sel = options.iter().find(|(v, _)| v == current).map(|(_, l)| *l).unwrap_or("");
     let mut changed = false;
-    let r = egui::ComboBox::from_id_salt(id).selected_text(sel).width(width).show_ui(ui, |ui| {
+    let r = egui::ComboBox::from_id_salt(id).selected_text(sel).width(width).truncate().show_ui(ui, |ui| {
         for (v, l) in options {
             let r = ui.selectable_label(v == current, *l);
             reg(format!("opt:{id}:{l}"), r.rect);

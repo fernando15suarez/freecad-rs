@@ -825,8 +825,8 @@ impl App {
             if let (Some(parts), true) = (self.fem.docs[a].rt.part_results.clone(), r.modes.is_empty()) {
                 task_box(ui, "fem_parts", "Part_BooleanFragments", "Per part", |ui| {
                     egui::Grid::new("fem_part_grid").striped(true).spacing(egui::vec2(10.0, 4.0)).show(ui, |ui| {
-                        for h in ["Part", "Max |u| (mm)", "Max vM (MPa)"] {
-                            ui.label(RichText::new(h).strong().color(theme::TEXT));
+                        for h in ["Part", "|u| max, mm", "vM max, MPa"] {
+                            ui.label(RichText::new(h).strong().size(12.0).color(theme::TEXT));
                         }
                         ui.end_row();
                         for (i, p) in parts.iter().enumerate() {
@@ -979,7 +979,8 @@ impl App {
         let g = painter.layout_no_wrap(text.clone(), egui::FontId::proportional(13.0), Color32::WHITE);
         let size = g.size() + Vec2::new(12.0, 8.0);
         let clip = painter.clip_rect();
-        let x = if p.x + 16.0 + size.x > clip.right() - 4.0 { p.x - 16.0 - size.x } else { p.x + 16.0 };
+        // keep clear of the color bar on the right of the view
+        let x = if p.x + 16.0 + size.x > clip.right() - 250.0 { p.x - 16.0 - size.x } else { p.x + 16.0 };
         let y = if p.y + 14.0 + size.y > clip.bottom() - 4.0 { p.y - 14.0 - size.y } else { p.y + 14.0 };
         let r = Rect::from_min_size(Pos2::new(x, y), size);
         painter.rect(r, 3.0, Color32::from_rgba_unmultiplied(20, 20, 20, 225), Stroke::new(1.0, theme::BORDER), egui::StrokeKind::Inside);
@@ -1024,7 +1025,8 @@ impl App {
             let v = s.min + span * t;
             let y = bar.bottom() - t as f32 * h;
             painter.line_segment([Pos2::new(bar.right(), y), Pos2::new(bar.right() + 4.0, y)], Stroke::new(1.0, Color32::from_gray(200)));
-            let label = if sci { format!("{v:.3e}") } else { format!("{v:.4}") };
+            // the same significant digits as the task panel and the tooltips
+            let label = if sci { format!("{v:.3e}") } else { sig(v) };
             painter.text(Pos2::new(bar.right() + 7.0, y), egui::Align2::LEFT_CENTER, label, font.clone(), Color32::WHITE);
         }
         let title = if unit.is_empty() { name.to_string() } else { format!("{name} ({unit})") };

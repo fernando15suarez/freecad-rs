@@ -160,6 +160,8 @@ impl App {
                 // the new view stays on display (FreeCAD shows an exploded view while it is visible)
                 let has_steps = self.asm_ref().and_then(|a| a.exploded_views.get(t.view)).is_some_and(|v| !v.steps.is_empty());
                 self.asm.explode_show = has_steps.then_some((t.view, 1.0));
+                self.rebuild_scene();
+                self.vp.fit_all();
             }
             _ => {}
         }
@@ -560,7 +562,7 @@ impl App {
                                 BomItem::Part(p) => {
                                     for (field, val, w) in [("part_number", &r.part_number, 90.0), ("description", &r.description, 130.0)] {
                                         let mut buf = val.clone();
-                                        let resp = ui.add(egui::TextEdit::singleline(&mut buf).desired_width(w).margin(egui::Margin::symmetric(4, 1)));
+                                        let resp = ui.add(egui::TextEdit::singleline(&mut buf).hint_text("—").desired_width(w).margin(egui::Margin::symmetric(4, 1)));
                                         widgets::reg(format!("bom:{}:{field}", r.name), resp.rect);
                                         if resp.changed() {
                                             edits.push((p, field, buf));
@@ -784,7 +786,8 @@ impl App {
                 let len = 75.0 / self.vp.pixels_per_unit_at(c);
                 // the dragger moves with the parts, so measure from where the press started
                 let along = (pos - press).dot(v / l) as f64 / l as f64 * len;
-                let d = ((start + along) * 10.0).round() / 10.0;
+                // whole millimetres, like a snapping dragger
+                let d = (start + along).round();
                 if let Some(AsmTask::Explode(t)) = self.asm.task.as_mut() {
                     t.distance = d;
                 }
@@ -811,6 +814,8 @@ impl App {
         self.dirty = true;
         self.status = "Step added".into();
         self.rebuild_scene();
+        // frame the exploded parts (FreeCAD fits after moving them too)
+        self.vp.fit_all();
     }
 
     fn step_text(&self, s: &ExplodeStep) -> String {
@@ -889,7 +894,7 @@ impl App {
                     changed |= task_row(ui, "Distance", |ui| self.num_field(ui, "explode.distance", &mut distance, "mm"));
                 }
                 let can = !sel.is_empty() && if mode == ExMode::Rotate { angle.abs() > 1e-9 } else { distance.abs() > 1e-9 };
-                add = widgets::push_button_enabled(ui, "explode:add", "Add step", ui.available_width() - 4.0, true, can).on_hover_text("Add the move to the view").clicked();
+                add = widgets::push_button_enabled(ui, "explode:add", "Add step", ui.available_width() - 4.0, true, can).on_hover_text("Add the move to the view").on_disabled_hover_text("Select parts and enter a distance (or an angle) first").clicked();
                 ui.label(RichText::new("Or drag an arrow of the dragger in the 3D view: releasing it adds the step.").color(Color32::from_gray(185)).small());
             });
             task_box(ui, "explode_anim", "media-playback-start", "Animation", |ui| {

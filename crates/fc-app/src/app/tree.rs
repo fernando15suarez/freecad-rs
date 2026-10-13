@@ -160,7 +160,7 @@ impl App {
         });
         let tree = egui::Panel::top("tree_split")
             .resizable(true)
-            .default_size((h * 0.33).max(120.0))
+            .default_size((h * 0.55).max(120.0))
             .size_range(80.0..=(h - 140.0).max(100.0))
             .frame(egui::Frame::new().fill(theme::PANEL))
             .show(ui, |ui| {
