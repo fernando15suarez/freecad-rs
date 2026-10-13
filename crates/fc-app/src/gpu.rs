@@ -4,11 +4,13 @@ use eframe::glow::{self, HasContext};
 use std::sync::Arc;
 
 pub struct ObjUpload {
-    /// pos(3)+normal(3) interleaved
+    /// pos(3)+normal(3)+color(3) interleaved
     pub verts: Vec<f32>,
     pub indices: Vec<u32>,
     /// line-segment vertices (see `push_segment`)
     pub edge_verts: Vec<f32>,
+    /// Use the per-vertex colors instead of the object color.
+    pub vcolor: bool,
 }
 
 #[derive(Default)]
@@ -62,6 +64,7 @@ struct GObj {
     ebo: glow::Buffer,
     n_idx: i32,
     edges: LineBuf,
+    vcolor: bool,
 }
 
 pub struct Gpu {
@@ -69,6 +72,7 @@ pub struct Gpu {
     mesh_vp: Option<glow::UniformLocation>,
     mesh_v3: Option<glow::UniformLocation>,
     mesh_col: Option<glow::UniformLocation>,
+    mesh_vcol: Option<glow::UniformLocation>,
     line_prog: glow::Program,
     line_vp: Option<glow::UniformLocation>,
     line_vs: Option<glow::UniformLocation>,
@@ -91,16 +95,21 @@ pub struct Gpu {
 const MESH_VS: &str = r#"#version 330 core
 layout(location=0) in vec3 a_pos;
 layout(location=1) in vec3 a_nrm;
+layout(location=2) in vec3 a_col;
 uniform mat4 u_vp;
 uniform mat3 u_v3;
 out vec3 v_n;
-void main(){ v_n = u_v3 * a_nrm; gl_Position = u_vp * vec4(a_pos,1.0); }
+out vec3 v_c;
+void main(){ v_n = u_v3 * a_nrm; v_c = a_col; gl_Position = u_vp * vec4(a_pos,1.0); }
 "#;
 const MESH_FS: &str = r#"#version 330 core
 in vec3 v_n;
+in vec3 v_c;
 uniform vec4 u_color;
+uniform int u_vcol;
 out vec4 frag;
 void main(){
+  vec4 base = u_vcol == 1 ? vec4(v_c, u_color.a) : u_color;
   vec3 n = normalize(v_n);
   if(n.z < 0.0) n = -n;
   vec3 l1 = normalize(vec3(-0.35,0.45,0.82));
@@ -108,7 +117,8 @@ void main(){
   float d = max(dot(n,l1),0.0)*0.62 + max(dot(n,l2),0.0)*0.20;
   vec3 h = normalize(l1 + vec3(0.0,0.0,1.0));
   float s = pow(max(dot(n,h),0.0), 40.0) * 0.22;
-  frag = vec4(u_color.rgb*(0.30+d) + vec3(s), u_color.a);
+  if(u_vcol == 1){ d = d*0.55 + 0.25; s *= 0.4; }
+  frag = vec4(base.rgb*(0.30+d) + vec3(s), base.a);
 }
 "#;
 const LINE_VS: &str = r#"#version 330 core
@@ -234,6 +244,7 @@ impl Gpu {
                 mesh_vp: gl.get_uniform_location(mesh_prog, "u_vp"),
                 mesh_v3: gl.get_uniform_location(mesh_prog, "u_v3"),
                 mesh_col: gl.get_uniform_location(mesh_prog, "u_color"),
+                mesh_vcol: gl.get_uniform_location(mesh_prog, "u_vcol"),
                 line_vp: gl.get_uniform_location(line_prog, "u_vp"),
                 line_vs: gl.get_uniform_location(line_prog, "u_vs"),
                 line_bias: gl.get_uniform_location(line_prog, "u_bias"),
@@ -274,15 +285,15 @@ impl Gpu {
                 gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, bytemuck_f32(&u.verts), glow::STATIC_DRAW);
                 gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ebo));
                 gl.buffer_data_u8_slice(glow::ELEMENT_ARRAY_BUFFER, bytes_u32(&u.indices), glow::STATIC_DRAW);
-                for (loc, off) in [(0u32, 0), (1, 12)] {
+                for (loc, off) in [(0u32, 0), (1, 12), (2, 24)] {
                     gl.enable_vertex_attrib_array(loc);
-                    gl.vertex_attrib_pointer_f32(loc, 3, glow::FLOAT, false, 24, off);
+                    gl.vertex_attrib_pointer_f32(loc, 3, glow::FLOAT, false, 36, off);
                 }
                 gl.bind_vertex_array(None);
                 let mut edges = line_buf(gl);
                 fill(gl, edges.vbo, &u.edge_verts);
                 edges.count = (u.edge_verts.len() / LINE_STRIDE) as i32;
-                self.objs.push(GObj { vao, vbo, ebo, n_idx: u.indices.len() as i32, edges });
+                self.objs.push(GObj { vao, vbo, ebo, n_idx: u.indices.len() as i32, edges, vcolor: u.vcolor });
             }
         }
     }
@@ -342,6 +353,7 @@ impl Gpu {
                         continue;
                     }
                     gl.uniform_4_f32_slice(self.mesh_col.as_ref(), col);
+                    gl.uniform_1_i32(self.mesh_vcol.as_ref(), o.vcolor as i32);
                     gl.bind_vertex_array(Some(o.vao));
                     gl.draw_elements(glow::TRIANGLES, o.n_idx, glow::UNSIGNED_INT, 0);
                 }
@@ -350,6 +362,7 @@ impl Gpu {
             gl.disable(glow::BLEND);
             // face highlights (slightly in front of the shaded faces)
             gl.polygon_offset(0.0, 0.0);
+            gl.uniform_1_i32(self.mesh_vcol.as_ref(), 0);
             for (tb, col) in [(&self.sel_tris, SEL_COLOR), (&self.hover_tris, HOVER_COLOR)] {
                 if tb.count > 0 {
                     gl.uniform_4_f32_slice(self.mesh_col.as_ref(), &col);

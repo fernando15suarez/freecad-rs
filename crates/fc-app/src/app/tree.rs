@@ -180,7 +180,7 @@ impl App {
                 match self.props_tab {
                     1 => self.variables(ui),
                     2 => self.measurements(ui),
-                    _ if self.task.is_some() || self.editor.is_some() || self.picking => {
+                    _ if self.task.is_some() || self.editor.is_some() || self.picking || self.fem.task.is_some() => {
                         // FreeCAD blanks the property view while a task dialog is open
                         let h = ui.available_height();
                         ui.add_space((h * 0.35).max(10.0));
@@ -198,6 +198,10 @@ impl App {
                         });
                     }
                     _ if self.active_assembly().is_some() => self.asm_data_tab(ui),
+                    _ if self.fem.sel.is_some() && self.tree_sel.is_empty() => {
+                        let it = self.fem.sel.unwrap();
+                        self.fem_data_tab(ui, it)
+                    }
                     _ => self.data_tab(ui),
                 }
             });
@@ -215,6 +219,8 @@ impl App {
         for (pid, pname) in parts {
             if self.active_part() == Some(pid) {
                 self.body_tree(ui, &pname, several, interactive, &mut acts);
+                let fem_interactive = self.editor.is_none() && self.task.is_none() && !self.picking && self.fem.task.is_none();
+                self.fem_tree(ui, fem_interactive);
                 continue;
             }
             // another part: a closed Body row; double-click opens it in Part Design
@@ -302,6 +308,7 @@ impl App {
             let r = ui.interact(rest, ui.id().with("tree_empty"), Sense::click());
             if r.clicked() {
                 self.tree_sel.clear();
+                self.fem.sel = None;
                 self.asm.sel.clear();
                 self.origin_sel = None;
                 self.fields.clear();
@@ -321,6 +328,7 @@ impl App {
                     } else {
                         self.tree_sel = vec![id];
                     }
+                    self.fem.sel = None;
                     self.origin_sel = None;
                     self.fields.clear();
                     self.rebuild_scene();

@@ -8,6 +8,8 @@
 
 mod assembly;
 mod chrome;
+mod fem;
+mod fem_ui;
 mod mates;
 mod tasks;
 mod tree;
@@ -17,7 +19,7 @@ use workspace::Tab;
 
 use crate::scene;
 use crate::sketcher::{EditorExit, SketchEditor};
-use crate::viewport::{Pick, PickKind, StandardView, Viewport};
+use crate::viewport::{Pick, PickKind, SceneEdge, SceneMesh, SceneObject, StandardView, Viewport};
 use crate::widgets;
 use eframe::egui;
 use fc_part::params::OnUsers;
@@ -119,6 +121,8 @@ pub struct App {
     /// The part last open in Part Design (the workbench switcher returns to it).
     last_part: Option<fc_assembly::PartId>,
     asm: assembly::AsmState,
+    /// FEM workbench: analyses of the document, tasks, runs and result display.
+    fem: fem::FemState,
     /// Mate connector task: the hovered element and its snapped inference point.
     mate_hover: Option<mates::MateHover>,
     meas_kind: MeasKind,
@@ -239,6 +243,7 @@ impl App {
             doc_in_ws: false,
             last_part: None,
             asm: assembly::AsmState::default(),
+            fem: fem::FemState::default(),
             mate_hover: None,
             meas_kind: MeasKind::Volume,
             meas_value_key: String::new(),
@@ -356,6 +361,9 @@ impl App {
         } else {
             self.planes_at = None;
         }
+        // FEM: the mesh or the result replaces the body
+        self.fem_extend_scene(&mut objs);
+        self.vp.pick_limit = self.fem.fem_at.unwrap_or(usize::MAX);
         self.vp.set_objects(objs);
         if self.editor.is_none() {
             let hl = self.tree_sel.iter().copied().find(|id| matches!(self.doc.get(*id).map(|f| &f.kind), Some(FeatureKind::Sketch(_))));
@@ -421,14 +429,14 @@ impl App {
     fn can_undo(&self) -> bool {
         match &self.editor {
             Some(ed) => ed.can_undo(),
-            None => self.task.is_none() && self.asm.task.is_none() && !self.undo.is_empty(),
+            None => self.task.is_none() && self.asm.task.is_none() && self.fem.task.is_none() && !self.undo.is_empty(),
         }
     }
 
     fn can_redo(&self) -> bool {
         match &self.editor {
             Some(ed) => ed.can_redo(),
-            None => self.task.is_none() && self.asm.task.is_none() && !self.redo.is_empty(),
+            None => self.task.is_none() && self.asm.task.is_none() && self.fem.task.is_none() && !self.redo.is_empty(),
         }
     }
 
@@ -437,7 +445,7 @@ impl App {
             ed.undo(&mut self.doc);
             return;
         }
-        if self.task.is_some() || self.asm.task.is_some() {
+        if self.task.is_some() || self.asm.task.is_some() || self.fem.task.is_some() {
             return;
         }
         if let Some(prev) = self.undo.pop() {
@@ -453,7 +461,7 @@ impl App {
             ed.redo(&mut self.doc);
             return;
         }
-        if self.task.is_some() || self.asm.task.is_some() {
+        if self.task.is_some() || self.asm.task.is_some() || self.fem.task.is_some() {
             return;
         }
         if let Some(next) = self.redo.pop() {
@@ -466,7 +474,7 @@ impl App {
 
     /// No dialog, sketch edit or task running: Part Design commands are available.
     fn idle(&self) -> bool {
-        self.editor.is_none() && self.task.is_none() && !self.picking && self.asm.task.is_none() && self.asm.drag.is_none()
+        self.editor.is_none() && self.task.is_none() && !self.picking && self.asm.task.is_none() && self.asm.drag.is_none() && self.fem.task.is_none()
     }
 
     /// The feature whose output is the current body solid (for sketch-on-face references).
@@ -823,15 +831,19 @@ impl App {
     fn open_path(&mut self, p: PathBuf) {
         let is_fcstd = p.extension().is_some_and(|e| e.eq_ignore_ascii_case("fcstd"));
         // FreeCAD assemblies (and the bodies they use) open as a workspace; v2 .fcrs too
+        let text = if is_fcstd { None } else { std::fs::read_to_string(&p).ok() };
         let ws = if is_fcstd {
             self.import_fcstd_assembly(&p)
         } else {
-            std::fs::read_to_string(&p).ok().map(|s| fc_assembly::Workspace::from_json(&s).map_err(|e| e.to_string()))
+            text.as_ref().map(|s| fc_assembly::Workspace::from_json(s).map_err(|e| e.to_string()))
         };
         if let Some(ws) = ws {
             match ws {
                 Ok(ws) => {
                     self.load_workspace(ws);
+                    if let Some(t) = &text {
+                        self.fem_load_text(t);
+                    }
                     self.disk_sig = if is_fcstd { None } else { file_sig(&p) };
                     self.disk_changed = false;
                     self.path = Some(if is_fcstd { p.with_extension("fcrs") } else { p });
@@ -879,14 +891,17 @@ impl App {
     fn reload_from_disk(&mut self) {
         let Some(p) = self.path.clone() else { return };
         let sig = file_sig(&p);
-        match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| fc_assembly::Workspace::from_json(&s).map_err(|e| e.to_string())) {
+        let text = std::fs::read_to_string(&p).unwrap_or_default();
+        match fc_assembly::Workspace::from_json(&text).map_err(|e| e.to_string()) {
             Ok(ws) => {
                 self.editor = None;
                 self.task = None;
                 self.asm.task = None;
+                self.fem.task = None;
                 self.snapshot();
                 let tab = self.tab;
                 self.load_workspace(ws);
+                self.fem_load_text(&text);
                 if self.ws.part(match tab { Tab::Part(p) => p, _ => u32::MAX }).is_some() || self.ws.assembly(match tab { Tab::Assembly(a) => a, _ => u32::MAX }).is_some() {
                     self.park();
                     self.tab = tab;
@@ -1419,6 +1434,25 @@ impl App {
                         }),
                         _ => None,
                     }).map(|s| if s.starts_with(&val) { val.clone() } else { s }),
+                    "fem_maxdisp" | "fem_maxvm" | "fem_f1" => {
+                        // within 1 % of VALUE
+                        let r = self.fem_cur().and_then(|a| self.fem.docs[a].rt.results.clone());
+                        let got = r.and_then(|r| match what.as_str() {
+                            "fem_maxdisp" => r.max_displacement().map(|e| e.value),
+                            "fem_maxvm" => r.max_von_mises().map(|e| e.value),
+                            _ => r.modes.first().map(|m| m.frequency),
+                        });
+                        let ok = got.zip(val.parse::<f64>().ok()).is_some_and(|(a, b)| (a - b).abs() <= 0.01 * b.abs());
+                        Some(if ok { val.clone() } else { format!("{got:?}") })
+                    }
+                    "fem_analyses" => Some(self.fem.docs.len().to_string()),
+                    "fem_constraints" => self.fem_cur().map(|a| self.fem.docs[a].analysis.constraints.len().to_string()),
+                    "fem_refs" => self.fem_cur().and_then(|a| self.fem.docs[a].analysis.constraints.last().map(|c| c.refs.iter().map(|r| r.name()).collect::<Vec<_>>().join(","))),
+                    "fem_mesh" => self.fem_cur().map(|a| self.fem.docs[a].rt.mesh.is_some().to_string()),
+                    "fem_result" => self.fem_cur().map(|a| self.fem.docs[a].rt.results.is_some().to_string()),
+                    "fem_error" => self.fem_cur().map(|a| self.fem.docs[a].rt.error.clone().unwrap_or_default()).map(|e| if !val.is_empty() && e.contains(val.as_str()) { val.clone() } else { e }),
+                    "fem_task" => Some(self.fem.task.is_some().to_string()),
+                    "fem_on" => Some(self.fem.on.to_string()),
                     "editing" => Some(self.editor.is_some().to_string()),
                     "task" => Some(self.task.is_some().to_string()),
                     "picking" => Some(self.picking.to_string()),
@@ -1475,6 +1509,17 @@ impl App {
                     self.dirty = false;
                     self.undo.clear();
                     self.vp.set_standard_view(StandardView::Isometric);
+                }
+                "femwait" => {
+                    // hold the script until the FEM run finishes (at most N frames)
+                    let left: u32 = arg.trim().parse().unwrap_or(3000);
+                    if self.fem.job.is_some() && left > 0 {
+                        run.steps.push_front(Step::Do("femwait".into(), (left - 1).to_string()));
+                        run.wait = 1;
+                    } else if self.fem.job.is_some() {
+                        eprintln!("[input] FAIL: FEM run still busy");
+                        run.failures += 1;
+                    }
                 }
                 "mark" => {
                     run.marks = self.asm_ref().map(|a| a.instances.iter().map(|i| (i.name.clone(), i.placement)).collect()).unwrap_or_default();
@@ -1585,6 +1630,9 @@ impl App {
         if self.show_origin {
             self.draw_plane_labels(ui, ctx);
         }
+        if self.fem_view_input(ui, ctx, r) {
+            return;
+        }
         if self.mate_view_input(ui, ctx, r) {
             return;
         }
@@ -1612,6 +1660,7 @@ impl eframe::App for App {
         }
         self.shortcuts(ctx);
         self.poll_disk(ctx);
+        self.fem_poll(ctx);
         let title = format!("{}{} - freecad-rs", self.doc_title(), if self.dirty { " •" } else { "" });
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
 
@@ -1628,7 +1677,7 @@ impl eframe::App for App {
             .frame(egui::Frame::new().fill(crate::theme::PANEL).inner_margin(egui::Margin { left: 0, right: 2, top: 0, bottom: 0 }))
             .show(ui, |ui| self.model_dock(ui));
 
-        let task_open = self.editor.is_some() || self.task.is_some() || self.picking || self.active_assembly().is_some();
+        let task_open = self.editor.is_some() || self.task.is_some() || self.picking || self.active_assembly().is_some() || self.fem.task.is_some();
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
             egui::Panel::bottom("doc_tabs").exact_size(28.0).frame(egui::Frame::new().fill(crate::theme::WINDOW)).show(ui, |ui| self.doc_tabs(ui));
             self.vp.right_inset = if task_open { tasks::TASK_W } else { 0.0 };

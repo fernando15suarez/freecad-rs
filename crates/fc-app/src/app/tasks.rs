@@ -265,12 +265,14 @@ impl App {
                 self.attachment_task(ui);
             } else if self.task.is_some() {
                 self.feature_task(ui);
+            } else if self.fem.task.is_some() {
+                self.fem_task_panel(ui);
             }
         });
     }
 
     /// Centered dialog buttons; returns (left clicked, right clicked).
-    fn task_buttons(&mut self, ui: &mut egui::Ui, left: (&str, &str), right: Option<(&str, &str)>) -> (bool, bool) {
+    pub(super) fn task_buttons(&mut self, ui: &mut egui::Ui, left: (&str, &str), right: Option<(&str, &str)>) -> (bool, bool) {
         self.task_buttons_ex(ui, left, right, true)
     }
 

@@ -15,6 +15,8 @@ pub struct SceneMesh {
     pub indices: Vec<u32>,
     /// face id per triangle
     pub tri_face: Vec<u32>,
+    /// Per-vertex colors (FEM result color maps); empty = the object's color.
+    pub colors: Vec<[f32; 3]>,
 }
 /// polyline per B-rep edge
 #[derive(Clone)]
@@ -224,10 +226,12 @@ impl Viewport {
         self.uploads = Arc::new(
             objs.iter()
                 .map(|o| {
-                    let mut verts = Vec::with_capacity(o.mesh.positions.len() * 6);
-                    for (p, n) in o.mesh.positions.iter().zip(&o.mesh.normals) {
+                    let vcolor = !o.mesh.colors.is_empty();
+                    let mut verts = Vec::with_capacity(o.mesh.positions.len() * 9);
+                    for (i, (p, n)) in o.mesh.positions.iter().zip(&o.mesh.normals).enumerate() {
                         verts.extend_from_slice(p);
                         verts.extend_from_slice(n);
+                        verts.extend_from_slice(o.mesh.colors.get(i).unwrap_or(&[0.0; 3]));
                     }
                     let mut edge_verts = vec![];
                     for e in &o.edges {
@@ -235,7 +239,7 @@ impl Viewport {
                             gpu::push_segment(&mut edge_verts, w[0], w[1], if o.color[3] < 0.999 { [o.color[0], o.color[1], o.color[2], 0.95] } else { EDGE_COLOR }, EDGE_WIDTH);
                         }
                     }
-                    ObjUpload { verts, indices: o.mesh.indices.clone(), edge_verts }
+                    ObjUpload { verts, indices: o.mesh.indices.clone(), edge_verts, vcolor }
                 })
                 .collect(),
         );
@@ -299,7 +303,7 @@ impl Viewport {
     fn rebuild_highlights(&mut self) {
         let mut hl = HlData::default();
         let mut add = |p: &Pick, hover: bool, objs: &[SceneObject]| {
-            let Some(o) = objs.get(p.object) else { return };
+            let Some(o) = objs.get(p.object).filter(|o| o.visible) else { return };
             match p.kind {
                 PickKind::Face => {
                     let out = if hover { &mut hl.hover_tris } else { &mut hl.sel_tris };
@@ -546,6 +550,33 @@ impl Viewport {
     }
 
     // ---------------------------------------------------------------- picking
+
+    /// The triangle of object `object` under a screen point (ignores `pick_limit`, edges and
+    /// vertices): (triangle index, hit point).
+    pub fn pick_triangle(&self, pos: Pos2, object: usize) -> Option<(usize, [f64; 3])> {
+        if !self.rect.contains(pos) {
+            return None;
+        }
+        let (o, d) = self.ray(pos)?;
+        let (obj, c) = (self.objects.get(object)?, self.cache.get(object)?);
+        if !obj.visible || !ray_aabb(o, d, c.min, c.max) {
+            return None;
+        }
+        let m = &obj.mesh;
+        let mut best: Option<(f64, usize)> = None;
+        for (t, tri) in m.indices.chunks_exact(3).enumerate() {
+            let v = |i: u32| {
+                let p = m.positions[i as usize];
+                DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64)
+            };
+            if let Some(tt) = ray_tri(o, d, v(tri[0]), v(tri[1]), v(tri[2])) {
+                if tt > 0.0 && best.is_none_or(|b| tt < b.0) {
+                    best = Some((tt, t));
+                }
+            }
+        }
+        best.map(|(tt, t)| (t, (o + d * tt).to_array()))
+    }
 
     fn pick_at(&self, pos: Pos2) -> Option<Pick> {
         let (o, d) = self.ray(pos)?;

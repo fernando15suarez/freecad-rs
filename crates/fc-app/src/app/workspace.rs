@@ -90,7 +90,7 @@ impl App {
     pub(super) fn state_json(&mut self) -> String {
         let was = self.doc_in_ws;
         self.park();
-        let s = format!("{}\n{}", self.tab.encode(), serde_json::to_string(&self.ws).expect("workspace serializes"));
+        let s = format!("{}\n{}\n{}", self.tab.encode(), serde_json::to_string(&self.ws).expect("workspace serializes"), self.fem_json());
         if !was {
             self.unpark();
         }
@@ -100,7 +100,9 @@ impl App {
     /// Bring back a snapshot. Parts whose definition did not change keep their computed
     /// shapes (no recompute), the others are recomputed.
     pub(super) fn restore(&mut self, json: &str) {
-        let Some((tab, body)) = json.split_once('\n') else { return };
+        let mut it = json.splitn(3, '\n');
+        let (Some(tab), Some(body)) = (it.next(), it.next()) else { return };
+        let fem = it.next().unwrap_or("").to_string();
         let (Some(tab), Ok(mut ws)) = (Tab::decode(tab), Workspace::from_json(body)) else { return };
         self.park();
         let mut old: HashMap<PartId, Document> = self.ws.parts.drain(..).map(|p| (p.id, p.doc)).collect();
@@ -116,6 +118,7 @@ impl App {
         self.ws = ws;
         self.tab = tab;
         self.unpark();
+        self.fem_restore_json(&fem);
         self.tree_sel.retain(|id| self.doc.get(*id).is_some());
         self.asm.prune(&self.ws, self.active_assembly());
         self.fields.clear();
@@ -138,6 +141,7 @@ impl App {
         self.doc_in_ws = true;
         self.unpark();
         self.asm = assembly::AsmState::default();
+        self.fem = fem::FemState { on: self.fem.on && self.active_part().is_some(), ..Default::default() };
         self.tree_sel.clear();
         self.origin_sel = None;
         self.selection.clear();
@@ -156,6 +160,8 @@ impl App {
         let was = self.doc_in_ws;
         self.park();
         let s = if self.ws.parts.len() == 1 && self.ws.assemblies.is_empty() { self.ws.parts[0].doc.to_json() } else { self.ws.to_json() };
+        // FEM analyses ride along as an extra key (older builds ignore it)
+        let s = self.fem_save_into(s);
         if !was {
             self.unpark();
         }
@@ -173,6 +179,10 @@ impl App {
         self.park();
         self.tab = t;
         self.unpark();
+        if matches!(t, Tab::Assembly(_)) {
+            self.fem.on = false;
+        }
+        self.fem.sel = None;
         self.tree_sel.clear();
         self.origin_sel = None;
         self.selection.clear();
@@ -230,6 +240,7 @@ impl App {
 
     /// Workbench switcher: Part Design opens a part, Assembly opens (or creates) an assembly.
     pub(super) fn switch_workbench(&mut self, assembly: bool) {
+        self.fem_leave();
         if assembly {
             match self.ws.assemblies.first().map(|a| a.id) {
                 Some(a) => self.switch_tab(Tab::Assembly(a)),

@@ -1,0 +1,170 @@
+# FEM: sketch a 1000 x 100 rectangle, pad 100 (the fc-fem parity cantilever), FEM workbench,
+# New analysis, material, Fixed on the x = 0 face, 1000 N along -Z on the x = 1000 face,
+# Gmsh mesh with 25 mm elements, run CalculiX. fc-fem's parity value: max |u| = 0.2005 mm.
+wait 5
+at ui tb:sketch
+click
+wait 10
+at ui plane:XY
+click
+wait 3
+at ui task:ok
+click
+wait 6
+key G
+key R
+at sketch 0 0
+click
+at sketch 40 20
+click
+wait 3
+key Escape
+wait 2
+at sketch 0 10
+click
+key K
+key V
+wait 3
+type 100
+key Enter
+wait 3
+at sketch 20 0
+click
+key K
+key H
+wait 3
+type 1000
+key Enter
+wait 3
+expect dof 0
+at ui task:close
+click
+wait 5
+at ui tb:pad
+click
+wait 5
+at ui field:Pad.Length
+click
+key A cmd
+type 100
+key Enter
+wait 4
+expect volume 10000000
+at ui task:ok
+click
+wait 3
+# FEM workbench
+at ui workbench
+click
+wait 3
+at ui wb:FEM
+click
+wait 3
+expect fem_on true
+at ui tb:fem_analysis
+click
+wait 3
+expect fem_analyses 1
+at ui tb:fem_material
+click
+wait 3
+expect fem_task true
+shot OUT/fem_material.png
+at ui task:ok
+click
+wait 3
+# Fixed on the x = 0 face (seen from the left)
+at ui tb:fem_fixed
+click
+wait 3
+key 6
+wait 3
+at world 0 50 50
+click
+wait 3
+expect fem_refs Face4
+key 0
+wait 3
+shot OUT/fem_fixed_task.png
+at ui task:ok
+click
+wait 3
+# Force on the x = 1000 face, 1000 N along -Z
+at ui tb:fem_force
+click
+wait 3
+key 3
+wait 3
+at world 1000 50 50
+click
+wait 3
+key 0
+wait 3
+at ui fem:force
+click
+key A cmd
+type 1000 N
+key Enter
+wait 2
+at ui combo:fem_dir
+click
+wait 3
+at ui opt:fem_dir:Along Z
+click
+wait 3
+at ui check:Reverse direction
+click
+wait 3
+shot OUT/fem_force_task.png
+at ui task:ok
+click
+wait 3
+expect fem_constraints 2
+shot OUT/fem_constraints.png
+# mesh
+at ui tb:fem_mesh
+click
+wait 3
+at ui fem:max_size
+click
+key A cmd
+type 25
+key Enter
+wait 2
+at ui fem:apply
+click
+wait 2
+femwait 3000
+wait 3
+expect fem_mesh true
+shot OUT/fem_mesh_task.png
+at ui task:ok
+click
+wait 3
+shot OUT/fem_mesh.png
+# solve
+at ui tb:fem_run
+click
+wait 3
+shot OUT/fem_running.png
+femwait 6000
+wait 5
+expect fem_result true
+expect fem_maxdisp 0.2005
+expect fem_task true
+shot OUT/fem_results.png
+at ui combo:fem_field
+click
+wait 3
+at ui opt:fem_field:Displacement Magnitude
+click
+wait 3
+at world 1000 50 100
+wait 3
+shot OUT/fem_disp_hover.png
+at ui task:close
+click
+wait 3
+saveto OUT/fem_cantilever.fcrs
+wait 2
+quit

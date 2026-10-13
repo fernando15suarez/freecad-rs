@@ -29,6 +29,9 @@
 //!   expect tab part NAME|assembly NAME | instances N | joints N | joint TYPE NAME | grounded NAME true|false
 //!   expect dof N (assembly) | solved true | moved NAME true|false | fixed_point NAME X Y Z (since mark)
 //!   expect connector NAME X Y Z | anchor EdgeN... | asmtask true|false
+//!   femwait [N]          wait until the FEM mesh/solve run finished (at most N frames)
+//!   expect fem_maxdisp V | fem_maxvm V | fem_f1 V (within 1 %) | fem_analyses N | fem_constraints N
+//!   expect fem_refs Face2,... | fem_mesh true | fem_result true | fem_error TEXT | fem_task true | fem_on true
 //!   shot PATH            save a screenshot
 //!   quit
 
@@ -105,7 +108,7 @@ pub fn parse(src: &str) -> Result<Vec<Step>, String> {
             "scroll" => Step::Scroll(f(1)? as f32, f(2)? as f32),
             "wait" => Step::Wait(f(1)? as u32),
             "expect" => Step::Expect(w.get(1).unwrap_or(&"").to_string(), w[2.min(w.len())..].join(" ")),
-            "demo" | "saveto" | "external" | "asmdemo" | "mark" | "open" => Step::Do(w[0].to_string(), line[w[0].len()..].trim().to_string()),
+            "demo" | "saveto" | "external" | "asmdemo" | "mark" | "open" | "femwait" => Step::Do(w[0].to_string(), line[w[0].len()..].trim().to_string()),
             "shot" => Step::Shot(w.get(1).unwrap_or(&"").to_string()),
             "quit" => Step::Quit,
             other => return Err(format!("line {}: unknown step '{other}'", ln + 1)),

@@ -3,6 +3,7 @@
 use super::*;
 use crate::theme;
 use crate::widgets::{tb_grip, tb_separator, tool_button, Action};
+use super::fem::{FemCmd, MECH, THERMAL};
 use egui::{Align2, Color32, RichText};
 
 /// Every command reachable from the menus, toolbars and shortcuts.
@@ -45,6 +46,8 @@ pub(super) enum Act {
     AsmConnector,
     Solve,
     Workbench(bool),
+    FemWorkbench,
+    Fem(super::fem::FemCmd),
 }
 
 const VIEWS: [(StandardView, &str, &str, &str, &str); 7] = [
@@ -73,7 +76,9 @@ impl App {
             Act::Undo => self.undo(),
             Act::Redo => self.redo(),
             Act::Delete => {
-                if self.active_assembly().is_some() {
+                if let (Some(it), true) = (self.fem.sel, self.fem.on && self.tree_sel.is_empty()) {
+                    self.fem_delete(it);
+                } else if self.active_assembly().is_some() {
                     if self.idle() {
                         self.asm_delete_selected();
                     }
@@ -93,6 +98,8 @@ impl App {
                 self.status = self.solver_message().0;
             }
             Act::Workbench(asm) => self.switch_workbench(asm),
+            Act::FemWorkbench => self.fem_enter(),
+            Act::Fem(c) => self.fem_cmd(c),
             Act::FitAll => {
                 if let Some(ed) = self.editor.as_mut() {
                     ed.fit();
@@ -133,7 +140,9 @@ impl App {
             Act::AddPipe => self.add_loft_or_pipe(false, true),
             Act::SubPipe => self.add_loft_or_pipe(true, true),
             Act::Edit => {
-                if self.active_assembly().is_some() {
+                if let (Some(it), true) = (self.fem.sel, self.fem.on && self.tree_sel.is_empty()) {
+                    self.fem_open_task(it);
+                } else if self.active_assembly().is_some() {
                     if let Some(super::assembly::AsmSel::Joint(j)) = self.asm.sel.last().copied() {
                         self.edit_joint(j);
                     }
@@ -171,7 +180,7 @@ impl App {
             Act::ExportStl => ("Std_Export", "Export STL...", "Exports the body as an STL mesh", String::new(), idle && self.doc.result().is_some()),
             Act::Undo => ("edit-undo", "Undo", "Undoes the last change", k("Ctrl+Z"), self.can_undo()),
             Act::Redo => ("edit-redo", "Redo", "Redoes a previously undone change", k("Ctrl+Shift+Z"), self.can_redo()),
-            Act::Delete => ("edit-delete", "Delete", "Deletes the selected item", "Del".into(), idle && (!self.tree_sel.is_empty() || !self.asm.sel.is_empty())),
+            Act::Delete => ("edit-delete", "Delete", "Deletes the selected item", "Del".into(), idle && (!self.tree_sel.is_empty() || !self.asm.sel.is_empty() || (self.fem.on && self.fem.sel.is_some()))),
             Act::FitAll => ("zoom-all", "Fit All", "Fits the whole content on the screen", "V, F".into(), true),
             Act::View(v) => {
                 let (_, icon, title, desc, key) = VIEWS.iter().find(|x| x.0 == v).copied().unwrap();
@@ -190,7 +199,7 @@ impl App {
             Act::SubLoft => ("PartDesign_SubtractiveLoft", "Subtractive Loft", "Cuts a loft through two or more sketches", String::new(), two_sketches),
             Act::AddPipe => ("PartDesign_AdditivePipe", "Additive Pipe", "Sweeps a profile sketch along a path sketch (select profile, then path)", String::new(), two_sketches),
             Act::SubPipe => ("PartDesign_SubtractivePipe", "Subtractive Pipe", "Cuts by sweeping a profile along a path", String::new(), two_sketches),
-            Act::Edit => ("edit-edit", "Edit", "Edits the selected feature, sketch or joint", String::new(), idle && (!self.tree_sel.is_empty() || matches!(self.asm.sel.last(), Some(super::assembly::AsmSel::Joint(_))))),
+            Act::Edit => ("edit-edit", "Edit", "Edits the selected feature, sketch or joint", String::new(), idle && (!self.tree_sel.is_empty() || matches!(self.asm.sel.last(), Some(super::assembly::AsmSel::Joint(_))) || (self.fem.on && self.fem.sel.is_some()))),
             Act::LeaveSketch => ("Sketcher_LeaveSketch", "Leave Sketch", "Finishes editing the active sketch", String::new(), self.editor.is_some()),
             Act::ViewSketch => ("Sketcher_ViewSketch", "View Sketch", "Sets the camera orientation perpendicular to the sketch plane and fits it", "Q, P".into(), self.editor.is_some()),
             Act::About => ("help-browser", "About freecad-rs", "", String::new(), true),
@@ -220,6 +229,11 @@ impl App {
             Act::Solve => ("Assembly_SolveAssembly", "Solve Assembly", "Solves the assembly's joints again", String::new(), idle && self.active_assembly().is_some()),
             Act::Workbench(true) => ("AssemblyWorkbench", "Assembly", "Assembly workbench: parts, joints and mate connectors", String::new(), idle),
             Act::Workbench(false) => ("PartDesignWorkbench", "Part Design", "Part Design workbench: sketches and features of a part", String::new(), idle),
+            Act::FemWorkbench => ("FemWorkbench", "FEM", "FEM workbench: finite element analysis of a part with Gmsh and CalculiX", String::new(), idle),
+            Act::Fem(c) => {
+                let (icon, title, desc, en) = self.fem_cmd_info(c);
+                (icon, title, desc, String::new(), en)
+            }
         }
     }
 
@@ -297,6 +311,39 @@ impl App {
                     });
                     self.menu_item(ui, Act::AsmConnector);
                 });
+            } else if self.fem.on && self.editor.is_none() {
+                ui.menu_button("Model", |ui| {
+                    ui.set_min_width(260.0);
+                    self.menu_item(ui, Act::Fem(FemCmd::Analysis));
+                    self.menu_item(ui, Act::Fem(FemCmd::Material));
+                    ui.menu_button("Mechanical boundary conditions and loads", |ui| {
+                        ui.set_min_width(260.0);
+                        for k in MECH {
+                            self.menu_item(ui, Act::Fem(FemCmd::Constraint(k)));
+                        }
+                    });
+                    ui.menu_button("Thermal boundary conditions and loads", |ui| {
+                        ui.set_min_width(260.0);
+                        for k in THERMAL {
+                            self.menu_item(ui, Act::Fem(FemCmd::Constraint(k)));
+                        }
+                    });
+                });
+                ui.menu_button("Mesh", |ui| {
+                    ui.set_min_width(240.0);
+                    self.menu_item(ui, Act::Fem(FemCmd::Mesh));
+                    self.menu_item(ui, Act::Fem(FemCmd::ClearMesh));
+                });
+                ui.menu_button("Solve", |ui| {
+                    ui.set_min_width(220.0);
+                    self.menu_item(ui, Act::Fem(FemCmd::Solver));
+                    self.menu_item(ui, Act::Fem(FemCmd::Run));
+                });
+                ui.menu_button("Results", |ui| {
+                    ui.set_min_width(220.0);
+                    self.menu_item(ui, Act::Fem(FemCmd::Results));
+                    self.menu_item(ui, Act::Fem(FemCmd::Purge));
+                });
             } else if self.editor.is_some() {
                 ui.menu_button("Sketch", |ui| {
                     ui.set_min_width(220.0);
@@ -336,6 +383,8 @@ impl App {
             ("SketcherWorkbench", "Sketcher")
         } else if self.active_assembly().is_some() {
             ("AssemblyWorkbench", "Assembly")
+        } else if self.fem.on {
+            ("FemWorkbench", "FEM")
         } else {
             ("PartDesignWorkbench", "Part Design")
         };
@@ -348,15 +397,16 @@ impl App {
         p.text(egui::pos2(rect.left() + 28.0, y), Align2::LEFT_CENTER, name, egui::FontId::proportional(13.0), theme::TEXT);
         let c = egui::pos2(rect.right() - 12.0, y);
         p.add(egui::Shape::convex_polygon(vec![c + egui::vec2(-4.0, -2.0), c + egui::vec2(4.0, -2.0), c + egui::vec2(0.0, 2.5)], Color32::from_rgb(150, 150, 150), egui::Stroke::NONE));
-        let resp = resp.on_hover_ui(|ui| crate::widgets::tooltip(ui, "Workbench", "Part Design edits parts, Assembly joins them. Sketcher is active while a sketch is being edited.", ""));
+        let resp = resp.on_hover_ui(|ui| crate::widgets::tooltip(ui, "Workbench", "Part Design edits parts, Assembly joins them, FEM analyses a part. Sketcher is active while a sketch is being edited.", ""));
         egui::Popup::menu(&resp).show(|ui| {
             ui.set_min_width(170.0);
-            for asm in [false, true] {
-                let (icon, title, desc, _, en) = self.act_info(Act::Workbench(asm));
-                let r = ui.add_enabled(en, egui::Button::image_and_text(crate::icons::image(ui.ctx(), icon, 16.0), title).selected(self.active_assembly().is_some() == asm));
+            let cur = if self.active_assembly().is_some() { 1 } else if self.fem.on { 2 } else { 0 };
+            for (i, a) in [Act::Workbench(false), Act::Workbench(true), Act::FemWorkbench].into_iter().enumerate() {
+                let (icon, title, desc, _, en) = self.act_info(a);
+                let r = ui.add_enabled(en, egui::Button::image_and_text(crate::icons::image(ui.ctx(), icon, 16.0), title).selected(cur == i));
                 crate::widgets::reg(format!("wb:{title}"), r.rect);
                 if r.on_hover_text(desc).clicked() {
-                    self.run(Act::Workbench(asm));
+                    self.run(a);
                     ui.close();
                 }
             }
@@ -449,6 +499,37 @@ impl App {
                     self.tb(ui, &format!("joint:{}", n.to_lowercase()), Act::Joint(n), false);
                 }
                 self.tb(ui, "asmconnector", Act::AsmConnector, false);
+                tb_separator(ui);
+                tb_grip(ui);
+                self.tb(ui, "edit", Act::Edit, false);
+                self.tb(ui, "delete", Act::Delete, false);
+            } else if self.fem.on && self.editor.is_none() {
+                // FreeCAD's FEM toolbars: Model, Mechanical, Thermal, Mesh, Solve, Results
+                tb_grip(ui);
+                self.tb(ui, "fem_analysis", Act::Fem(FemCmd::Analysis), false);
+                self.tb(ui, "fem_material", Act::Fem(FemCmd::Material), matches!(self.fem.task, Some(super::fem::FemTask::Material { .. })));
+                tb_separator(ui);
+                tb_grip(ui);
+                for k in MECH {
+                    self.tb(ui, k.info().1, Act::Fem(FemCmd::Constraint(k)), false);
+                }
+                tb_separator(ui);
+                tb_grip(ui);
+                for k in THERMAL {
+                    self.tb(ui, k.info().1, Act::Fem(FemCmd::Constraint(k)), false);
+                }
+                tb_separator(ui);
+                tb_grip(ui);
+                self.tb(ui, "fem_mesh", Act::Fem(FemCmd::Mesh), matches!(self.fem.task, Some(super::fem::FemTask::Mesh { .. })));
+                self.tb(ui, "fem_clearmesh", Act::Fem(FemCmd::ClearMesh), false);
+                tb_separator(ui);
+                tb_grip(ui);
+                self.tb(ui, "fem_solver", Act::Fem(FemCmd::Solver), matches!(self.fem.task, Some(super::fem::FemTask::Solver { .. })));
+                self.tb(ui, "fem_run", Act::Fem(FemCmd::Run), self.fem.job.is_some());
+                tb_separator(ui);
+                tb_grip(ui);
+                self.tb(ui, "fem_results", Act::Fem(FemCmd::Results), matches!(self.fem.task, Some(super::fem::FemTask::Results { .. })));
+                self.tb(ui, "fem_purge", Act::Fem(FemCmd::Purge), false);
                 tb_separator(ui);
                 tb_grip(ui);
                 self.tb(ui, "edit", Act::Edit, false);
@@ -566,6 +647,10 @@ impl App {
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     let text = if let Some(ed) = &self.editor {
                         ed.status().to_string()
+                    } else if let Some(j) = &self.fem.job {
+                        format!("{}  ({:.1} s)", j.stage, j.started.elapsed().as_secs_f64())
+                    } else if let Some(t) = &self.fem.hover_text {
+                        t.clone()
                     } else if let Some(h) = &self.hovered {
                         format!("Preselected: {} ({:.2} mm, {:.2} mm, {:.2} mm)", pick_name(&self.vp, h, self.planes_at), h.point[0], h.point[1], h.point[2])
                     } else {
@@ -639,6 +724,9 @@ impl App {
                 Key::Delete | Key::Backspace if self.idle() && self.active_assembly().is_some() => self.asm_delete_selected(),
                 Key::G if self.idle() && self.active_assembly().is_some() => self.run(Act::Ground),
                 Key::I if self.idle() && self.active_assembly().is_some() => self.run(Act::AsmInsert),
+                Key::Escape if self.fem.task.is_some() => self.fem_task_cancel(),
+                Key::Enter if self.fem.task.is_some() => self.fem_task_ok(),
+                Key::Delete | Key::Backspace if self.idle() && self.fem.on && self.fem.sel.is_some() && self.tree_sel.is_empty() => self.run(Act::Delete),
                 Key::Escape if self.task.is_some() => self.task_cancel(),
                 Key::Escape if self.picking => {
                     self.end_plane_pick();

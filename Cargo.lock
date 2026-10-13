@@ -729,6 +729,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "fc-assembly",
+ "fc-fem",
  "fc-occt",
  "fc-part",
  "fc-sketch",
@@ -736,6 +737,7 @@ dependencies = [
  "image",
  "resvg",
  "rfd",
+ "serde",
  "serde_json",
 ]
 
@@ -758,6 +760,7 @@ dependencies = [
 name = "fc-fem"
 version = "0.1.0"
 dependencies = [
+ "fc-assembly",
  "fc-occt",
  "fc-part",
  "fc-sketch",
