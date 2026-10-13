@@ -33,3 +33,14 @@ Out of scope for now: FEM, CAM, Arch, TechDraw, assemblies, Python.
 - `tools/e2e/run.sh` — drives the real app with scripted mouse/keyboard input (`FCRS_INPUT`), e.g. new sketch ->
   rectangle -> dimensions -> Pad -> formula in Length -> sketch on the top face -> circle -> Pocket -> undo/redo.
 - Sketch editor scripts: `crates/fc-app/src/sketcher/scripts/` (`FCRS_SKETCH_SCRIPT`).
+
+## Phase 2: Assembly + FEM (requested 2026-10-12)
+- [x] **A1 Multi-part workspaces** — several parts + assemblies per document, instances, v2 project files.
+- [x] **A2 Mate connectors** — Onshape-style connectors on parts and in assemblies, rebuild-safe anchors.
+- [x] **A3 Joints + solver** — FreeCAD 1.1 joints + Onshape planar/pin-slot; port of FreeCAD's Ondsel solver (exact parity); drag; DOF/conflict reports.
+- [x] **A4 Assembly tools** — structured STEP export/import (FreeCAD reads it), STL, interference/clearance, BOM + CSV, exploded views, sub-assemblies.
+- [x] **F1-F3 FEM** — Gmsh meshing + CalculiX (FreeCAD's bundled tools), static/modal/thermal, identical to FreeCAD FEM on reference cases; FEM workbench UI with result color maps.
+- [x] **F4 Assembly FEA** — multi-part analyses (bonded/ties/contact), contact detection, per-part results, FreeCAD parity.
+- [ ] Next candidates: gear/belt/screw joint tools, flexible sub-assemblies, shells/beams, nonlinear materials, Part workbench (booleans, fillets).
+
+FreeCAD source reference: `~/Projects/rust-gaming/freecad-src` (full checkout incl. OndselSolver).
