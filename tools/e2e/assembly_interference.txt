@@ -1,0 +1,32 @@
+# Assembly: interference check finds the one overlapping pair (BlockA/BlockB, 10 x 20 x 20 =
+# 4000 mm³), shows the overlap in red; clearance between BlockB and BlockC (20 mm) by clicking.
+wait 5
+asmtest overlap
+wait 5
+expect tab assembly Assembly
+expect leaves 3
+at ui tb:interference
+click
+wait 5
+expect asmtask true
+expect interferences 1
+expect interference_volume 4000
+at ui interf:0
+click
+wait 4
+expect highlight true
+shot OUT/asm_interference.png
+at inst BlockB 15 10 20
+click
+wait 3
+at inst BlockC 10 10 20
+click
+wait 4
+expect clearance 20
+shot OUT/asm_clearance.png
+at ui task:close
+click
+wait 3
+expect asmtask false
+expect highlight false
+quit

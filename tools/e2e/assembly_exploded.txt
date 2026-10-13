@@ -1,0 +1,60 @@
+# Assembly: exploded view. A Bolt moved 50 mm along Z by typing (Add step), the Plate moved
+# along X with the dragger; t = 0 shows the assembly, Play runs to t = 1; the view is saved
+# in the assembly and stays on display after OK.
+wait 5
+asmtest bom
+wait 5
+at ui tb:explode
+click
+wait 4
+expect asmtask true
+at inst Bolt 0 0 20
+click
+wait 3
+at ui field:explode.distance
+click
+key A cmd
+type 50
+wait 3
+expect explode_pos Bolt 15 15 60
+at ui explode:add
+click
+wait 3
+expect explode_steps 1
+expect explode_pos Bolt 15 15 60
+# the Plate, with the dragger's X arrow
+at inst Plate 90 5 10
+click
+wait 4
+at ui dragger:X
+down
+wait 2
+at world 140 30 0
+wait 3
+at world 160 30 0
+wait 3
+shot OUT/asm_explode_drag.png
+up
+wait 4
+expect explode_steps 2
+shot OUT/asm_explode.png
+# assembled again at t = 0, then the animation back to t = 1
+at ui explode:t0
+click
+wait 3
+expect explode_pos Bolt 15 15 10
+at ui explode:play
+click
+wait 10
+shot OUT/asm_explode_playing.png
+animwait 3000
+wait 3
+expect explode_pos Bolt 15 15 60
+at ui task:ok
+click
+wait 4
+expect asmtask false
+expect explode_steps 2
+expect explode_pos Bolt 15 15 60
+shot OUT/asm_exploded_view.png
+quit

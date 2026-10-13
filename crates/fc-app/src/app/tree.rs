@@ -89,7 +89,7 @@ fn tree_row_ex(ui: &mut egui::Ui, s: RowSpec, menu: Option<&mut dyn FnMut(&mut e
         let c = Pos2::new(x0 + 5.0, y);
         let pts = if open { vec![c + Vec2::new(-4.0, -2.5), c + Vec2::new(4.0, -2.5), c + Vec2::new(0.0, 3.0)] } else { vec![c + Vec2::new(-2.5, -4.0), c + Vec2::new(3.0, 0.0), c + Vec2::new(-2.5, 4.0)] };
         let er = Rect::from_center_size(c, Vec2::splat(14.0));
-        let eresp = ui.interact(er, ui.id().with((&s.reg, "exp")), Sense::click());
+        let eresp = ui.interact(er, ui.id().with((&s.reg, "exp", rect.top() as i32)), Sense::click());
         let col = if eresp.hovered() { Color32::WHITE } else { Color32::from_rgb(170, 170, 170) };
         ui.painter().add(egui::Shape::convex_polygon(pts, col, Stroke::NONE));
         out.expand = eresp.clicked();
@@ -97,7 +97,7 @@ fn tree_row_ex(ui: &mut egui::Ui, s: RowSpec, menu: Option<&mut dyn FnMut(&mut e
     let mut x = x0 + 14.0;
     if let Some(vis) = s.eye {
         let er = Rect::from_center_size(Pos2::new(x + 9.0, y), Vec2::splat(16.0));
-        let eresp = ui.interact(er, ui.id().with((&s.reg, "eye")), Sense::click());
+        let eresp = ui.interact(er, ui.id().with((&s.reg, "eye", rect.top() as i32)), Sense::click());
         widgets::reg(format!("{}:eye", s.reg), er);
         crate::icons::paint(ui.painter(), if vis { "TreeItemVisible" } else { "TreeItemInvisible" }, er, if eresp.hovered() { Color32::WHITE } else { Color32::from_gray(215) });
         out.eye = eresp.on_hover_text(if vis { "Hide" } else { "Show" }).clicked();

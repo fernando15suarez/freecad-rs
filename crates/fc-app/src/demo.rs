@@ -144,3 +144,92 @@ pub fn assembly_workspace(assembled: bool) -> fc_assembly::Workspace {
     }
     ws
 }
+
+/// A box `[x0, x0 + w] x [y0, y0 + d] x [0, h]` as a part document.
+fn box_part(x0: f64, y0: f64, w: f64, d: f64, h: f64) -> Document {
+    let mut doc = Document::new();
+    let s = doc.add_sketch(Support::XY, rect_sketch(x0, y0, w, d).0);
+    doc.add(FeatureKind::Pad(Extrude::new(s, h)));
+    doc.recompute();
+    doc
+}
+
+/// A cylinder of radius `r` and height `h` on the origin.
+fn pin_part(r: f64, h: f64) -> Document {
+    let mut doc = Document::new();
+    let mut sk = Sketch::default();
+    let c = sk.add_geometry(Geometry { curve: Curve::Circle { c: v(0.0, 0.0), r }, construction: false });
+    sk.add_constraint(Constraint::new(K::Diameter(c, 2.0 * r)));
+    sk.add_constraint(Constraint::new(K::LockX(pr(c, PointPos::Mid), 0.0)));
+    sk.add_constraint(Constraint::new(K::LockY(pr(c, PointPos::Mid), 0.0)));
+    let s = doc.add_sketch(Support::XY, sk);
+    doc.add(FeatureKind::Pad(Extrude::new(s, h)));
+    doc.recompute();
+    doc
+}
+
+fn meta(material: &str, part_number: &str, description: &str) -> fc_assembly::PartMeta {
+    fc_assembly::PartMeta {
+        part_number: part_number.into(),
+        description: description.into(),
+        material: material.into(),
+        density: fc_fem::Material::by_name(material).map(|m| m.density),
+        ..Default::default()
+    }
+}
+
+/// Test assemblies for the e2e scripts (`asmtest NAME`):
+/// - `overlap`: 20 mm cubes BlockA (grounded, at the origin), BlockB at x = 10 (overlaps A by
+///   10 x 20 x 20 = 4000 mm³) and BlockC at x = 50 (20 mm from B);
+/// - `bom`: "Main" = Plate (100 x 60 x 10) + 3 Bolts (Ø6 x 20) + the sub-assembly "BoltPair"
+///   (2 Bolts); materials Aluminum 6061-T6 and Steel-Generic;
+/// - `stack`: fc-fem's asm_stack: a 40 x 40 x 20 aluminium block "Lower" under a steel
+///   block "Upper" of the same size.
+pub fn asm_test_workspace(name: &str) -> Option<fc_assembly::Workspace> {
+    use fc_assembly::Frame;
+    let mut ws = fc_assembly::Workspace::new();
+    match name {
+        "overlap" => {
+            let ids: Vec<_> = ["BlockA", "BlockB", "BlockC"].iter().map(|n| ws.add_part(n, box_part(0.0, 0.0, 20.0, 20.0, 20.0))).collect();
+            let a = ws.add_assembly("Assembly");
+            let asm = ws.assembly_mut(a).unwrap();
+            let ia = asm.add_part_instance("BlockA", ids[0], Frame::IDENTITY);
+            asm.set_grounded(ia, true);
+            asm.add_part_instance("BlockB", ids[1], Frame::translation([10.0, 0.0, 0.0]));
+            asm.add_part_instance("BlockC", ids[2], Frame::translation([50.0, 0.0, 0.0]));
+        }
+        "bom" => {
+            let plate = ws.add_part("Plate", box_part(0.0, 0.0, 100.0, 60.0, 10.0));
+            let bolt = ws.add_part("Bolt", pin_part(3.0, 20.0));
+            ws.part_mut(plate).unwrap().meta = meta("Aluminum 6061-T6", "PL-100", "Base plate");
+            ws.part_mut(bolt).unwrap().meta = meta("Steel-Generic", "", "Pin Ø6 x 20");
+            let main = ws.add_assembly("Main");
+            let pair = ws.add_assembly("BoltPair");
+            {
+                let p = ws.assembly_mut(pair).unwrap();
+                p.add_part_instance("Bolt", bolt, Frame::IDENTITY);
+                p.add_part_instance("Bolt", bolt, Frame::translation([12.0, 0.0, 0.0]));
+            }
+            let m = ws.assembly_mut(main).unwrap();
+            let ip = m.add_part_instance("Plate", plate, Frame::IDENTITY);
+            m.set_grounded(ip, true);
+            for x in [15.0, 35.0, 55.0] {
+                m.add_part_instance("Bolt", bolt, Frame::translation([x, 15.0, 10.0]));
+            }
+            ws.add_sub_assembly(main, "BoltPair", pair, Frame::translation([70.0, 45.0, 10.0])).unwrap();
+        }
+        "stack" => {
+            let lo = ws.add_part("Lower", box_part(0.0, 0.0, 40.0, 40.0, 20.0));
+            let up = ws.add_part("Upper", box_part(0.0, 0.0, 40.0, 40.0, 20.0));
+            ws.part_mut(lo).unwrap().meta = meta("Aluminum 6061-T6", "", "");
+            ws.part_mut(up).unwrap().meta = meta("Steel-Generic", "", "");
+            let a = ws.add_assembly("Stack");
+            let asm = ws.assembly_mut(a).unwrap();
+            let il = asm.add_part_instance("Lower", lo, Frame::IDENTITY);
+            asm.set_grounded(il, true);
+            asm.add_part_instance("Upper", up, Frame::translation([0.0, 0.0, 20.0]));
+        }
+        _ => return None,
+    }
+    Some(ws)
+}

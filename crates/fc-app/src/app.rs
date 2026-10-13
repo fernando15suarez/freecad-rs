@@ -6,6 +6,7 @@
 //! - `tree.rs`: Model dock (tree, property grid, variables, measurements)
 //! - `tasks.rs`: Tasks panel (feature parameters, sketch attachment, sketch edit)
 
+mod asm_tools;
 mod assembly;
 mod chrome;
 mod fem;
@@ -32,6 +33,8 @@ enum Dialog {
     ConfirmDelete { what: DeleteWhat, users: Vec<String> },
     Message(String),
     About,
+    /// Assembly STEP / STL export options.
+    AsmExport(asm_tools::AsmExportOpts),
 }
 
 #[derive(Clone)]
@@ -351,6 +354,9 @@ impl App {
                 .and_then(|s| scene::shape_object("Body", s, scene::BODY_COLOR))
                 .into_iter()
                 .collect()
+        } else if self.doc.features.is_empty() {
+            // a part imported from STEP: its solid, no features
+            self.active_part().and_then(|p| self.ws.part(p)).and_then(|e| e.imported.as_ref()).and_then(|s| scene::shape_object("Body", s, scene::BODY_COLOR)).into_iter().collect()
         } else {
             scene::body_objects(&self.doc)
         };
@@ -1206,6 +1212,13 @@ impl App {
 
     fn dialogs(&mut self, ctx: &egui::Context) {
         let Some(d) = self.dialog.take() else { return };
+        if let Dialog::AsmExport(o) = &d {
+            let mut o = o.clone();
+            if self.asm_export_window(ctx, &mut o) && self.dialog.is_none() {
+                self.dialog = Some(Dialog::AsmExport(o));
+            }
+            return;
+        }
         let mut keep = true;
         let modal = |title: &str| egui::Window::new(title.to_string()).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).min_width(320.0);
         match &d {
@@ -1251,6 +1264,7 @@ impl App {
                     keep = false;
                 }
             }
+            Dialog::AsmExport(_) => {}
             Dialog::About => {
                 modal("About freecad-rs").show(ctx, |ui| {
                     ui.horizontal(|ui| {
@@ -1445,7 +1459,63 @@ impl App {
                         let ok = got.zip(val.parse::<f64>().ok()).is_some_and(|(a, b)| (a - b).abs() <= 0.01 * b.abs());
                         Some(if ok { val.clone() } else { format!("{got:?}") })
                     }
-                    "fem_mode" => Some((self.fem.view.mode + 1).to_string()),
+                    "leaves" => self.active_assembly().map(|a| self.ws.leaves(a).len().to_string()),
+                "interferences" | "interference_volume" => {
+                    let vols: Vec<f64> = match &self.asm.task {
+                        Some(assembly::AsmTask::Interference(t)) if t.results.is_some() => t.results.as_ref().unwrap().iter().map(|x| x.volume).collect(),
+                        _ => self.active_assembly().map(|a| self.ws.interferences(a, &Default::default()).iter().map(|x| x.volume).collect()).unwrap_or_default(),
+                    };
+                    if what == "interferences" {
+                        Some(vols.len().to_string())
+                    } else {
+                        let ok = vols.first().zip(val.parse::<f64>().ok()).is_some_and(|(a, b)| (a - b).abs() <= 1e-3 * b.abs().max(1.0));
+                        Some(if ok { val.clone() } else { format!("{vols:?}") })
+                    }
+                }
+                "clearance" => match &self.asm.task {
+                    Some(assembly::AsmTask::Interference(t)) => t.clearance.as_ref().map(|r| match r {
+                        Ok(d) if val.parse::<f64>().is_ok_and(|b| (d.value - b).abs() <= 1e-6 * b.abs().max(1.0)) => val.clone(),
+                        Ok(d) => d.value.to_string(),
+                        Err(e) => e.clone(),
+                    }),
+                    _ => None,
+                },
+                "highlight" => Some(self.asm.highlight.is_some().to_string()),
+                "bom" | "bom_mass" => {
+                    let (n, want) = val.rsplit_once(' ').unwrap_or((&val, ""));
+                    let rows = self.active_assembly().map(|a| self.ws.bom(a, &self.bom_opts())).unwrap_or_default();
+                    rows.iter().find(|r| r.name == n).map(|r| {
+                        let ok = if what == "bom" { r.quantity.to_string() == want } else { r.unit_mass.zip(want.parse::<f64>().ok()).is_some_and(|(a, b)| (a - b).abs() <= 1e-3 * b.abs()) };
+                        if ok { val.clone() } else { format!("{n} qty {} mass {:?}", r.quantity, r.unit_mass) }
+                    })
+                }
+                "meta" => {
+                    // PART FIELD VALUE...
+                    let w: Vec<&str> = val.splitn(3, ' ').collect();
+                    let e = w.first().and_then(|n| self.ws.parts.iter().find(|p| p.name == *n));
+                    e.map(|e| {
+                        let got = match w.get(1).copied().unwrap_or("") {
+                            "part_number" => e.meta.part_number.clone(),
+                            "description" => e.meta.description.clone(),
+                            "material" => e.meta.material.clone(),
+                            _ => "?".into(),
+                        };
+                        if got == w.get(2).copied().unwrap_or("") { val.clone() } else { got }
+                    })
+                }
+                "explode_pos" => {
+                    let w: Vec<&str> = val.split_whitespace().collect();
+                    let v: Vec<f64> = w[1..].iter().filter_map(|x| x.parse().ok()).collect();
+                    let asm = self.asm_ref();
+                    asm.and_then(|a| a.instance_by_name(w.first().copied().unwrap_or(""))).map(|i| {
+                        let pl = self.asm.explode_cache.as_ref().and_then(|c| c.shown.get(&i.id).copied()).unwrap_or(i.placement);
+                        let ok = v.len() == 3 && (0..3).all(|k| (pl.pos[k] - v[k]).abs() < 1e-6);
+                        if ok { val.clone() } else { format!("{:?}", pl.pos) }
+                    })
+                }
+                "explode_steps" => self.asm_ref().map(|a| a.exploded_views.iter().map(|v| v.steps.len().to_string()).collect::<Vec<_>>().join(",")),
+                "file" => Some(std::fs::metadata(&val).map(|m| m.len() > 0).unwrap_or(false).to_string()).map(|s| if s == "true" { val.clone() } else { s }),
+                "fem_mode" => Some((self.fem.view.mode + 1).to_string()),
                 "fem_kind" => self.fem_cur().and_then(|a| self.fem.docs[a].analysis.constraints.last().map(|c| c.kind.default_name().to_string())),
                 "fem_analyses" => Some(self.fem.docs.len().to_string()),
                     "fem_constraints" => self.fem_cur().map(|a| self.fem.docs[a].analysis.constraints.len().to_string()),
@@ -1523,8 +1593,54 @@ impl App {
                         run.failures += 1;
                     }
                 }
+                "animwait" => {
+                    // hold the script until the exploded view animation ends (at most N frames)
+                    let left: u32 = arg.trim().parse().unwrap_or(3000);
+                    let playing = matches!(&self.asm.task, Some(assembly::AsmTask::Explode(t)) if t.play.is_some());
+                    if playing && left > 0 {
+                        run.steps.push_front(Step::Do("animwait".into(), (left - 1).to_string()));
+                        run.wait = 1;
+                    }
+                }
                 "mark" => {
                     run.marks = self.asm_ref().map(|a| a.instances.iter().map(|i| (i.name.clone(), i.placement)).collect()).unwrap_or_default();
+                }
+                "asmtest" => match crate::demo::asm_test_workspace(arg.trim()) {
+                    Some(ws) => {
+                        self.load_workspace(ws);
+                        self.path = None;
+                        self.dirty = false;
+                        self.undo.clear();
+                        self.vp.set_standard_view(StandardView::Isometric);
+                        self.vp.fit_all();
+                    }
+                    None => {
+                        eprintln!("[input] FAIL: no test assembly {arg}");
+                        run.failures += 1;
+                    }
+                },
+                "exportstep" | "exportstl" => {
+                    let (path, opt) = arg.split_once(' ').unwrap_or((&arg, ""));
+                    let o = asm_tools::AsmExportOpts { stl: cmd == "exportstl", ap242: opt.eq_ignore_ascii_case("ap242"), colors: true, visible_only: false };
+                    match self.do_asm_export(std::path::Path::new(path), &o) {
+                        Ok(m) => self.status = m,
+                        Err(e) => {
+                            eprintln!("[input] FAIL: export: {e}");
+                            run.failures += 1;
+                        }
+                    }
+                }
+                "importstep" => self.import_step_file(std::path::Path::new(arg.trim())),
+                "bomcsv" => {
+                    if let Err(e) = self.bom_write_csv(std::path::Path::new(arg.trim())) {
+                        eprintln!("[input] FAIL: bom csv: {e}");
+                        run.failures += 1;
+                    }
+                }
+                "select" => {
+                    let ids: Vec<assembly::AsmSel> = arg.split(',').filter_map(|n| self.asm_ref().and_then(|a| a.instance_by_name(n.trim())).map(|i| assembly::AsmSel::Inst(i.id))).collect();
+                    self.asm.sel = ids;
+                    self.rebuild_scene();
                 }
                 "platedemo" => {
                     let mut ws = fc_assembly::Workspace::new();

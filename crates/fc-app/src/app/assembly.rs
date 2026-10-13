@@ -11,13 +11,19 @@ use crate::viewport::SceneObject;
 use crate::widgets::{self, task_box, task_row};
 use egui::{Color32, RichText};
 use fc_assembly::{
-    AssemblyId, ConnectorId, DragTarget, ImplicitPoint, InstanceId, Joint, JointId, JointKind, JointRef, Limits, PartId, Sense, SolveOptions, SolveReport, SolveStatus, Workspace,
+    InstanceOf, AssemblyId, ConnectorId, DragTarget, ImplicitPoint, InstanceId, Joint, JointId, JointKind, JointRef, Limits, PartId, Sense, SolveOptions, SolveReport, SolveStatus, Workspace,
 };
 use fc_part::Frame as MFrame;
 
 /// FreeCAD's selection color for whole objects.
 const SEL_COLOR: [f32; 4] = [0.11, 0.68, 0.11, 1.0];
 const GHOST_COLOR: [f32; 4] = [0.55, 0.62, 0.75, 0.45];
+/// Parts other than an inspected interference pair.
+const FADED_COLOR: [f32; 4] = [0.6, 0.6, 0.62, 0.12];
+/// The two parts of an inspected interference.
+const PAIR_COLOR: [f32; 4] = [0.75, 0.78, 0.85, 0.35];
+/// The overlapping volume of an interference.
+const INTERFERENCE_COLOR: [f32; 4] = [0.95, 0.1, 0.1, 1.0];
 
 /// The joint tools, in FreeCAD's toolbar order, then Onshape's extra mates.
 pub const JOINT_TOOLS: [(&str, &str, &str); 11] = [
@@ -104,6 +110,9 @@ pub enum AsmTask {
     Insert { before: String, added: usize },
     Joint(JointTask),
     Connector(ConnTask),
+    Interference(super::asm_tools::InterfTask),
+    Bom(super::asm_tools::BomTask),
+    Explode(super::asm_tools::ExplodeTask),
 }
 
 /// What is under the cursor in the assembly view.
@@ -135,8 +144,15 @@ pub struct AsmState {
     pub drag: Option<Drag>,
     pub hover: Option<Hover>,
     /// Insert: the part following the cursor until a click places it.
-    pub pending: Option<PartId>,
+    pub pending: Option<InstanceOf>,
     pub cursor_world: Option<[f64; 3]>,
+    /// The overlap of an interference picked in its task (drawn red).
+    pub highlight: Option<super::asm_tools::Highlight>,
+    /// An exploded view on display: (view index, animation time).
+    pub explode_show: Option<(usize, f64)>,
+    /// Bounding-box centres of the top-level instances (exploded views), with the
+    /// placements they were computed for.
+    pub explode_cache: Option<super::asm_tools::ExplodeCache>,
 }
 
 impl AsmState {
@@ -192,6 +208,15 @@ impl App {
         self.active_assembly().and_then(|a| self.ws.assembly(a))
     }
 
+    /// Open what an instance places: its part in Part Design, or its assembly.
+    fn open_instance(&mut self, inst: InstanceId) {
+        match self.asm_ref().and_then(|a| a.instance(inst)).map(|i| i.of) {
+            Some(InstanceOf::Part(p)) => self.switch_tab(Tab::Part(p)),
+            Some(InstanceOf::Assembly(a)) => self.switch_tab(Tab::Assembly(a)),
+            None => {}
+        }
+    }
+
     fn inst_part(&self, inst: InstanceId) -> Option<PartId> {
         match self.asm_ref()?.instance(inst)?.of {
             fc_assembly::InstanceOf::Part(p) => Some(p),
@@ -199,7 +224,7 @@ impl App {
         }
     }
 
-    fn inst_name(&self, inst: InstanceId) -> String {
+    pub(super) fn inst_name(&self, inst: InstanceId) -> String {
         self.asm_ref().and_then(|a| a.instance(inst)).map(|i| i.name.clone()).unwrap_or_else(|| "?".into())
     }
 
@@ -238,35 +263,63 @@ impl App {
         let mut objs = vec![];
         let mut map = vec![];
         let selected: HashSet<InstanceId> = self.asm.sel.iter().filter_map(|s| if let AsmSel::Inst(i) = s { Some(*i) } else { None }).collect();
-        for inst in &asm.instances {
-            let fc_assembly::InstanceOf::Part(p) = inst.of else { continue };
-            if !inst.visible {
+        // the exploded view on display moves top-level instances (and what they contain)
+        let shown = self.asm_display_placements();
+        // an interference picked in its task: the two parts stay opaque, the others fade
+        let focus: Option<(Vec<InstanceId>, Vec<InstanceId>)> = self.asm.highlight.as_ref().map(|h| (h.a.clone(), h.b.clone()));
+        for leaf in self.ws.leaves(a) {
+            if !leaf.visible {
                 continue;
             }
+            let top = leaf.path[0];
+            let p = leaf.part;
             if !self.asm.meshes.contains_key(&p) {
-                let m = self.ws.part(p).and_then(|e| e.doc.result()).and_then(|s| scene::shape_object("", s, scene::BODY_COLOR));
+                let m = self.ws.part(p).and_then(|e| e.shape()).and_then(|s| scene::shape_object("", s, scene::BODY_COLOR));
                 self.asm.meshes.insert(p, m);
             }
+            let pl = match (shown.get(&top), asm.instance(top)) {
+                (Some(new), Some(old)) => new.mul(&old.placement.inverse()).mul(&leaf.placement),
+                _ => leaf.placement,
+            };
             if let Some(Some(m)) = self.asm.meshes.get(&p) {
-                let color = if selected.contains(&inst.id) { SEL_COLOR } else { scene::BODY_COLOR };
-                objs.push(transform_object(m, &inst.placement, &inst.name, color));
-                map.push(inst.id);
+                let mut color = if selected.contains(&top) { SEL_COLOR } else { scene::BODY_COLOR };
+                if let Some((fa, fb)) = &focus {
+                    // the pair turns see-through so the red overlap inside shows
+                    color = if leaf.path == *fa || leaf.path == *fb { PAIR_COLOR } else { FADED_COLOR };
+                }
+                objs.push(transform_object(m, &pl, &leaf.name, color));
+                map.push(top);
             }
         }
-        // a part being inserted follows the cursor
+        // a part or sub-assembly being inserted follows the cursor
         if let (Some(p), Some(w)) = (self.asm.pending, self.asm.cursor_world) {
-            if !self.asm.meshes.contains_key(&p) {
-                let m = self.ws.part(p).and_then(|e| e.doc.result()).and_then(|s| scene::shape_object("", s, scene::BODY_COLOR));
-                self.asm.meshes.insert(p, m);
-            }
-            if let Some(Some(m)) = self.asm.meshes.get(&p) {
-                let pl = self.insert_placement(p, w);
-                let mut g = transform_object(&m, &pl, "ghost", GHOST_COLOR);
-                g.vertices.clear();
-                objs.push(g);
+            let pl = self.insert_placement(p, w);
+            for (part, local) in self.pending_leaves(p) {
+                if !self.asm.meshes.contains_key(&part) {
+                    let m = self.ws.part(part).and_then(|e| e.shape()).and_then(|s| scene::shape_object("", s, scene::BODY_COLOR));
+                    self.asm.meshes.insert(part, m);
+                }
+                if let Some(Some(m)) = self.asm.meshes.get(&part) {
+                    let mut g = transform_object(m, &pl.mul(&local), "ghost", GHOST_COLOR);
+                    g.vertices.clear();
+                    objs.push(g);
+                }
             }
         }
         self.vp.pick_limit = map.len();
+        // the overlap of the picked interference, in red over everything
+        if let Some(h) = &self.asm.highlight {
+            if let Some(mut o) = scene::shape_object("Interference", &h.shape, INTERFERENCE_COLOR) {
+                o.vertices.clear();
+                // pulled in a hair so its faces do not z-fight with the parts' faces around it
+                let n = o.mesh.positions.len().max(1) as f32;
+                let c = o.mesh.positions.iter().fold([0.0f32; 3], |a, p| [a[0] + p[0] / n, a[1] + p[1] / n, a[2] + p[2] / n]);
+                let shrink = |p: &mut [f32; 3]| (0..3).for_each(|k| p[k] = c[k] + (p[k] - c[k]) * 0.995);
+                o.mesh.positions.iter_mut().for_each(shrink);
+                o.edges.iter_mut().for_each(|e| e.points.iter_mut().for_each(shrink));
+                objs.push(o);
+            }
+        }
         self.asm.objs = map;
         self.vp.set_objects(objs);
         self.vp.set_overlay(crate::viewport::Overlay::default());
@@ -274,12 +327,24 @@ impl App {
     }
 
     /// Placement of a new instance whose bounding-box center (in XY, bottom at z = 0) lands on `w`.
-    fn insert_placement(&self, p: PartId, w: [f64; 3]) -> fc_assembly::Frame {
-        let b = self.ws.part(p).and_then(|e| e.doc.result()).map(|s| s.bbox()).unwrap_or([0.0; 6]);
+    fn insert_placement(&self, of: InstanceOf, w: [f64; 3]) -> fc_assembly::Frame {
+        let b = match of {
+            InstanceOf::Part(p) => self.ws.part(p).and_then(|e| e.shape()).map(|s| s.bbox()),
+            InstanceOf::Assembly(a) => self.ws.instance_shape(a, &[]).map(|s| s.bbox()),
+        }
+        .unwrap_or([0.0; 6]);
         fc_assembly::Frame::translation([w[0] - 0.5 * (b[0] + b[3]), w[1] - 0.5 * (b[1] + b[4]), w[2] - b[2]])
     }
 
-    fn obj_inst(&self, object: usize) -> Option<InstanceId> {
+    /// The parts a pending insert shows, with their placements inside it.
+    fn pending_leaves(&self, of: InstanceOf) -> Vec<(PartId, fc_assembly::Frame)> {
+        match of {
+            InstanceOf::Part(p) => vec![(p, fc_assembly::Frame::IDENTITY)],
+            InstanceOf::Assembly(a) => self.ws.leaves(a).into_iter().filter(|l| l.visible).map(|l| (l.part, l.placement)).collect(),
+        }
+    }
+
+    pub(super) fn obj_inst(&self, object: usize) -> Option<InstanceId> {
         self.asm.objs.get(object).copied()
     }
 
@@ -330,7 +395,7 @@ impl App {
             JointRef::Geometry { instance, element, implicit } => {
                 let inst = asm.instance(*instance)?;
                 let fc_assembly::InstanceOf::Part(p) = inst.of else { return None };
-                let shape = self.ws.part(p)?.doc.result()?;
+                let shape = self.ws.part(p)?.shape()?;
                 let (k, n) = fc_part::TopoKind::parse(element)?;
                 let infer = match implicit {
                     ImplicitPoint::Infer(i) => *i,
@@ -355,7 +420,7 @@ impl App {
                 let how = match implicit {
                     ImplicitPoint::Infer(i) => {
                         let (k, _) = fc_part::TopoKind::parse(element).unwrap_or((fc_part::TopoKind::Face, 0));
-                        let geom = self.inst_part(*instance).and_then(|p| self.ws.part(p)).and_then(|e| e.doc.result()).and_then(|s| fc_part::TopoKind::parse(element).map(|(k, n)| mate_ui::element_geom(s, k, n))).unwrap_or(0);
+                        let geom = self.inst_part(*instance).and_then(|p| self.ws.part(p)).and_then(|e| e.shape()).and_then(|s| fc_part::TopoKind::parse(element).map(|(k, n)| mate_ui::element_geom(s, k, n))).unwrap_or(0);
                         format!(" ({})", mate_ui::infer_label(k, geom, *i).to_lowercase())
                     }
                     _ => String::new(),
@@ -412,7 +477,7 @@ impl App {
         let inst = self.obj_inst(h.object)?;
         let asm = self.asm_ref()?;
         let pl = asm.instance(inst)?.placement;
-        let shape = self.ws.part(self.inst_part(inst)?)?.doc.result()?;
+        let shape = self.ws.part(self.inst_part(inst)?)?.shape()?;
         let kind = mate_ui::topo_kind(h.kind);
         let index = h.id as usize + 1;
         let cands = mate_ui::candidates(shape, kind, index);
@@ -436,6 +501,9 @@ impl App {
         if self.asm.drag.is_some() && released {
             self.end_drag();
         }
+        if pressed && self.explode_pre_view(ctx) {
+            return;
+        }
         if !pressed || self.asm.task.is_some() || self.asm.drag.is_some() {
             return;
         }
@@ -454,6 +522,8 @@ impl App {
         let n = self.vp.view_dir();
         let plane = crate::viewport::Plane { origin: p.point, normal: n, xdir: [1.0, 0.0, 0.0] };
         let before = self.state_json();
+        // dragging works on the assembled placements
+        self.asm.explode_show = None;
         self.asm.drag = Some(Drag { inst, local, plane, before, moved: false });
         self.vp.capture_primary = true;
     }
@@ -494,6 +564,11 @@ impl App {
             ctx.request_repaint();
             return;
         }
+        // exploded view task: dragging an axis of the dragger
+        if self.explode_view_input(ctx) {
+            self.draw_asm_overlay(ui);
+            return;
+        }
         // insert: the pending part follows the cursor on the XY plane; click places it
         if let Some(p) = self.asm.pending {
             let w = ptr.and_then(|pos| self.vp.screen_to_plane(pos, &crate::viewport::Plane { origin: [0.0; 3], normal: [0.0, 0.0, 1.0], xdir: [1.0, 0.0, 0.0] }));
@@ -525,7 +600,11 @@ impl App {
                     }
                 }
                 Some(AsmTask::Insert { .. }) => {}
-                None => {
+                Some(AsmTask::Interference(_)) => {
+                    let inst = r.clicked.as_ref().and_then(|p| self.obj_inst(p.object));
+                    self.interf_pick(inst);
+                }
+                Some(AsmTask::Explode(_)) | Some(AsmTask::Bom(_)) | None => {
                     let multi = ctx.input(|i| i.modifiers.ctrl || i.modifiers.command);
                     let s = match &hover {
                         Some(Hover::Triad(JointRef::AssemblyConnector(c), _)) => Some(AsmSel::Conn(*c)),
@@ -553,9 +632,7 @@ impl App {
         if r.response.double_clicked() && self.asm.task.is_none() {
             if let Some(AsmSel::Inst(i)) = self.asm.sel.last().copied() {
                 // like FreeCAD, double-clicking a part opens it for editing
-                if let Some(p) = self.inst_part(i) {
-                    self.switch_tab(Tab::Part(p));
-                }
+                self.open_instance(i);
             }
         }
         self.draw_asm_overlay(ui);
@@ -632,6 +709,7 @@ impl App {
                 mate_ui::draw(&p, &self.vp, &f, Look::Selected);
             }
         }
+        self.draw_tools_overlay(&p);
     }
 
     // ------------------------------------------------------------- commands
@@ -645,17 +723,28 @@ impl App {
         self.status = "Pick a part in the list, then click in the 3D view to place it".into();
     }
 
-    fn place_instance(&mut self, p: PartId, pl: fc_assembly::Frame) {
+    fn place_instance(&mut self, of: InstanceOf, pl: fc_assembly::Frame) {
         let Some(a) = self.active_assembly() else { return };
-        let name = self.part_name(p);
         let first = self.asm_ref().is_some_and(|x| x.instances.is_empty());
-        if let Some(asm) = self.ws.assembly_mut(a) {
-            let id = asm.add_part_instance(&name, p, pl);
-            // FreeCAD grounds the first part inserted into an assembly
-            if first {
-                asm.set_grounded(id, true);
-            }
-            let _ = id;
+        let name = match of {
+            InstanceOf::Part(p) => self.part_name(p),
+            InstanceOf::Assembly(s) => self.ws.assembly(s).map(|x| x.name.clone()).unwrap_or_default(),
+        };
+        let id = match of {
+            InstanceOf::Part(p) => self.ws.assembly_mut(a).map(|asm| asm.add_part_instance(&name, p, pl)),
+            // FreeCAD 1.1 inserts an assembly as a (rigid) sub-assembly link
+            InstanceOf::Assembly(s) => match self.ws.add_sub_assembly(a, &name, s, pl) {
+                Ok(id) => Some(id),
+                Err(e) => {
+                    self.status = format!("Cannot insert {name}: {e}");
+                    self.asm.pending = None;
+                    return;
+                }
+            },
+        };
+        // FreeCAD grounds the first part inserted into an assembly
+        if let (true, Some(id), Some(asm)) = (first, id, self.ws.assembly_mut(a)) {
+            asm.set_grounded(id, true);
         }
         if let Some(AsmTask::Insert { added, .. }) = self.asm.task.as_mut() {
             *added += 1;
@@ -667,18 +756,22 @@ impl App {
         self.status = if first { format!("Inserted {name} (grounded, as the first part)") } else { format!("Inserted {name}") };
     }
 
-    /// Insert task: choose a part. The first instance goes to the origin; later ones follow
-    /// the cursor until a click places them.
-    fn insert_choose(&mut self, p: PartId) {
+    /// Insert task: choose a part or an assembly. The first instance goes to the origin; later
+    /// ones follow the cursor until a click places them.
+    fn insert_choose(&mut self, of: InstanceOf) {
         let empty = self.asm_ref().is_some_and(|a| a.instances.is_empty());
         if empty {
-            self.place_instance(p, fc_assembly::Frame::IDENTITY);
+            self.place_instance(of, fc_assembly::Frame::IDENTITY);
             // leave room around the first part for placing the next ones
             self.vp.fit_all();
             self.vp.zoom(0.55);
         } else {
-            self.asm.pending = Some(p);
-            self.status = format!("Click in the 3D view to place {}", self.part_name(p));
+            self.asm.pending = Some(of);
+            let name = match of {
+                InstanceOf::Part(p) => self.part_name(p),
+                InstanceOf::Assembly(s) => self.ws.assembly(s).map(|x| x.name.clone()).unwrap_or_default(),
+            };
+            self.status = format!("Click in the 3D view to place {name}");
         }
     }
 
@@ -721,7 +814,7 @@ impl App {
         self.rebuild_scene();
     }
 
-    fn placements(&self) -> Vec<(InstanceId, fc_assembly::Frame)> {
+    pub(super) fn placements(&self) -> Vec<(InstanceId, fc_assembly::Frame)> {
         self.asm_ref().map(|a| a.instances.iter().map(|i| (i.id, i.placement)).collect()).unwrap_or_default()
     }
 
@@ -732,6 +825,7 @@ impl App {
         }
         let before = self.state_json();
         let t = JointTask { kind, refs: vec![], joint: None, editing: false, before, start: self.placements(), offset: 0.0, rotation: 0.0, sense: Sense::Auto, limits: Limits::default() };
+        self.asm.explode_show = None;
         self.asm.task = Some(AsmTask::Joint(t));
         self.asm.sel.clear();
         self.fields.clear();
@@ -861,7 +955,7 @@ impl App {
         self.status = self.solver_message().0;
     }
 
-    fn asm_task_cancel(&mut self) {
+    pub(super) fn asm_task_cancel(&mut self) {
         self.asm.pending = None;
         self.asm.cursor_world = None;
         match self.asm.task.take() {
@@ -872,8 +966,12 @@ impl App {
                 }
             }
             Some(AsmTask::Connector(t)) => self.restore(&t.before),
+            Some(AsmTask::Bom(t)) => self.restore(&t.before),
+            Some(AsmTask::Explode(t)) => self.restore(&t.before),
+            Some(AsmTask::Interference(_)) => {}
             None => {}
         }
+        self.asm.highlight = None;
         self.fields.clear();
         self.rebuild_scene();
         self.status = "Cancelled".into();
@@ -894,6 +992,7 @@ impl App {
                 self.rebuild_scene();
             }
             Some(AsmTask::Connector(_)) => self.conn_task_ok(),
+            Some(AsmTask::Interference(_)) | Some(AsmTask::Bom(_)) | Some(AsmTask::Explode(_)) => self.tool_task_ok(),
             None => {}
         }
     }
@@ -928,7 +1027,7 @@ impl App {
 
     fn conn_task_local(&self, t: &ConnTask) -> Option<(InstanceId, MFrame)> {
         let (inst, el, infer) = t.pick.as_ref()?;
-        let shape = self.ws.part(self.inst_part(*inst)?)?.doc.result()?;
+        let shape = self.ws.part(self.inst_part(*inst)?)?.shape()?;
         let (k, n) = fc_part::TopoKind::parse(el)?;
         let base = fc_part::mate::infer_frame(shape, k, n, *infer).ok()?;
         let mc = fc_part::MateConnector { anchor: fc_part::Anchor::Origin, flip_z: t.flip, x_turns: t.turns, offset: [0.0, 0.0, t.offset], rotation: [0.0; 3] };
@@ -1000,7 +1099,7 @@ fn dof_text(dof: usize) -> String {
 
 impl App {
     /// A plain number field for assembly values (mm or °); applies live while typing.
-    fn num_field(&mut self, ui: &mut egui::Ui, id: &str, v: &mut f64, unit: &str) -> bool {
+    pub(super) fn num_field(&mut self, ui: &mut egui::Ui, id: &str, v: &mut f64, unit: &str) -> bool {
         let key = format!("asm:{id}");
         let shown = format!("{} {unit}", fmt_num(*v)).trim().to_string();
         let buf = self.fields.entry(key.clone()).or_insert_with(|| shown.clone());
@@ -1023,7 +1122,7 @@ impl App {
         changed
     }
 
-    fn commit_focused_asm_field(&mut self) {
+    pub(super) fn commit_focused_asm_field(&mut self) {
         self.fields.retain(|k, _| !k.starts_with("asm:"));
     }
 
@@ -1033,11 +1132,14 @@ impl App {
             Some(AsmTask::Joint(_)) => self.joint_panel(ui),
             Some(AsmTask::Insert { .. }) => self.insert_panel(ui),
             Some(AsmTask::Connector(_)) => self.conn_panel(ui),
+            Some(AsmTask::Interference(_)) => self.interf_panel(ui),
+            Some(AsmTask::Bom(_)) => self.bom_panel(ui),
+            Some(AsmTask::Explode(_)) => self.explode_panel(ui),
             None => self.asm_overview_panel(ui),
         }
     }
 
-    fn ok_cancel(&mut self, ui: &mut egui::Ui) -> (bool, bool) {
+    pub(super) fn ok_cancel(&mut self, ui: &mut egui::Ui) -> (bool, bool) {
         let bw = 118.0;
         let mut out = (false, false);
         ui.horizontal(|ui| {
@@ -1049,7 +1151,7 @@ impl App {
         out
     }
 
-    fn link_row(ui: &mut egui::Ui, reg: &str, icon: &str, text: &str, tip: &str) -> bool {
+    pub(super) fn link_row(ui: &mut egui::Ui, reg: &str, icon: &str, text: &str, tip: &str) -> bool {
         let w = ui.available_width();
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 22.0), egui::Sense::click());
         widgets::reg(reg.to_string(), rect);
@@ -1142,6 +1244,26 @@ impl App {
                 if Self::link_row(ui, "taskact:solve", "Assembly_SolveAssembly", "Solve Assembly", "Solve the joints again") {
                     act = Some(chrome::Act::Solve);
                 }
+                if Self::link_row(ui, "taskact:explode", "Assembly_ExplodedView", "Exploded View", "Create an exploded view: move parts in steps, animate") {
+                    act = Some(chrome::Act::AsmExplode);
+                }
+                if Self::link_row(ui, "taskact:bom", "Assembly_BillOfMaterials", "Bill of Materials", "Parts, quantities, part numbers, materials and masses") {
+                    act = Some(chrome::Act::AsmBom);
+                }
+                if Self::link_row(ui, "taskact:interference", "Part_Common", "Check Interference", "Find overlapping parts and measure clearances") {
+                    act = Some(chrome::Act::AsmInterference);
+                }
+            });
+            task_box(ui, "asm_exchange", "Std_Export", "Exchange", |ui| {
+                if Self::link_row(ui, "taskact:exportstep", "Std_Export", "Export STEP...", "Write the assembly as STEP (AP214 or AP242) with its structure") {
+                    act = Some(chrome::Act::ExportStep);
+                }
+                if Self::link_row(ui, "taskact:exportstl", "Std_Export", "Export STL...", "Write the posed parts as one STL mesh") {
+                    act = Some(chrome::Act::ExportStl);
+                }
+                if Self::link_row(ui, "taskact:importstep", "Std_Import", "Import STEP...", "Read a STEP assembly into the document") {
+                    act = Some(chrome::Act::ImportStep);
+                }
             });
         });
         if let Some(a) = act {
@@ -1152,33 +1274,43 @@ impl App {
     fn insert_panel(&mut self, ui: &mut egui::Ui) {
         let (cancel, ok) = self.ok_cancel(ui);
         let filter = self.fields.get("asm:insert_search").cloned().unwrap_or_default().to_lowercase();
-        let parts: Vec<(PartId, String, bool)> = self.ws.parts.iter().filter(|p| p.name.to_lowercase().contains(filter.trim())).map(|p| (p.id, p.name.clone(), p.doc.result().is_some())).collect();
+        let cur = self.active_assembly();
+        // parts, then the other assemblies that can go in as sub-assemblies (no cycles)
+        let mut items: Vec<(InstanceOf, String, bool)> = self.ws.parts.iter().map(|p| (InstanceOf::Part(p.id), p.name.clone(), p.shape().is_some())).collect();
+        items.extend(self.ws.assemblies.iter().filter(|x| Some(x.id) != cur && !cur.is_some_and(|c| self.ws.uses_assembly(x.id, c))).map(|x| (InstanceOf::Assembly(x.id), x.name.clone(), !x.instances.is_empty())));
+        items.retain(|(_, n, _)| n.to_lowercase().contains(filter.trim()));
         let pending = self.asm.pending;
         let mut chosen = None;
         let mut search = self.fields.get("asm:insert_search").cloned().unwrap_or_default();
         task_box(ui, "insert", "Assembly_InsertLink", "Insert", |ui| {
-            let r = ui.add(egui::TextEdit::singleline(&mut search).hint_text("Search parts...").desired_width(ui.available_width() - 4.0).margin(egui::Margin::symmetric(5, 3)));
+            let r = ui.add(egui::TextEdit::singleline(&mut search).hint_text("Search parts and assemblies...").desired_width(ui.available_width() - 4.0).margin(egui::Margin::symmetric(5, 3)));
             widgets::reg("insert:search", r.rect);
             ui.add_space(4.0);
             egui::Frame::new().fill(theme::INPUT).stroke(egui::Stroke::new(1.0, theme::BORDER)).corner_radius(3.0).inner_margin(3.0).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.set_min_height(120.0);
-                for (id, name, solid) in &parts {
+                for (of, name, solid) in &items {
                     let w = ui.available_width();
                     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 24.0), if *solid { egui::Sense::click() } else { egui::Sense::hover() });
                     widgets::reg(format!("insert:{name}"), rect);
-                    let fill = if pending == Some(*id) { theme::SELECTION } else if resp.hovered() { theme::HOVER_ROW } else { Color32::TRANSPARENT };
+                    let fill = if pending == Some(*of) { theme::SELECTION } else if resp.hovered() { theme::HOVER_ROW } else { Color32::TRANSPARENT };
                     ui.painter().rect_filled(rect, 2.0, fill);
-                    crate::icons::paint_ex(ui.painter(), "PartDesign_Body", egui::Rect::from_center_size(egui::pos2(rect.left() + 13.0, rect.center().y), egui::vec2(16.0, 16.0)), Color32::WHITE, !*solid);
+                    let icon = if matches!(of, InstanceOf::Assembly(_)) { "Geoassembly" } else { "PartDesign_Body" };
+                    crate::icons::paint_ex(ui.painter(), icon, egui::Rect::from_center_size(egui::pos2(rect.left() + 13.0, rect.center().y), egui::vec2(16.0, 16.0)), Color32::WHITE, !*solid);
                     ui.painter().text(egui::pos2(rect.left() + 28.0, rect.center().y), egui::Align2::LEFT_CENTER, name, egui::FontId::proportional(13.0), if *solid { theme::TEXT } else { theme::TEXT_DIM });
-                    let resp = resp.on_hover_text(if *solid { "Click to insert; then click in the 3D view to place it" } else { "This part has no solid yet" });
-                    if resp.clicked() {
-                        chosen = Some(*id);
+                    let tip = match (of, solid) {
+                        (InstanceOf::Assembly(_), true) => "Click to insert this assembly as a rigid sub-assembly; then click in the 3D view to place it",
+                        (InstanceOf::Assembly(_), false) => "This assembly is empty",
+                        (_, true) => "Click to insert; then click in the 3D view to place it",
+                        _ => "This part has no solid yet",
+                    };
+                    if resp.on_hover_text(tip).clicked() {
+                        chosen = Some(*of);
                     }
                 }
             });
             ui.add_space(6.0);
-            for t in ["Click a part to insert it", "The first part goes to the origin, grounded", "Others follow the cursor: click to place", "Insert as many as needed, then OK"] {
+            for t in ["Click a part or an assembly to insert it", "The first part goes to the origin, grounded", "Others follow the cursor: click to place", "Insert as many as needed, then OK"] {
                 ui.label(RichText::new(format!("•  {t}")).color(Color32::from_gray(190)));
             }
         });
@@ -1395,6 +1527,8 @@ impl App {
         use super::tree::{is_open, toggle_open, tree_row_pub, RowSpecPub};
         let Some(asm) = self.ws.assembly(a).cloned() else { return };
         let active = self.active_assembly() == Some(a);
+        // rows of other assemblies get their assembly's name in the test-hook name
+        let pre = if active { String::new() } else { format!("{}/", asm.name) };
         let problems = if active { self.asm.problem_joints() } else { vec![] };
         let key = format!("asm{a}");
         let open = is_open(ui, &key, true);
@@ -1435,7 +1569,7 @@ impl App {
                 let r = tree_row_pub(
                     ui,
                     RowSpecPub {
-                        reg: format!("tree:Grounded:{}", inst.name),
+                        reg: format!("tree:{pre}Grounded:{}", inst.name),
                         depth: depth + 2,
                         expander: None,
                         eye: None,
@@ -1467,7 +1601,7 @@ impl App {
                 let r = tree_row_pub(
                     ui,
                     RowSpecPub {
-                        reg: format!("tree:{}", j.name),
+                        reg: format!("tree:{pre}{}", j.name),
                         depth: depth + 2,
                         expander: None,
                         eye: None,
@@ -1506,7 +1640,7 @@ impl App {
             let r = tree_row_pub(
                 ui,
                 RowSpecPub {
-                    reg: format!("tree:{}", c.name),
+                    reg: format!("tree:{pre}{}", c.name),
                     depth: depth + 1,
                     expander: None,
                     eye: None,
@@ -1527,17 +1661,17 @@ impl App {
             let r = tree_row_pub(
                 ui,
                 RowSpecPub {
-                    reg: format!("tree:{}", inst.name),
+                    reg: format!("tree:{pre}{}", inst.name),
                     depth: depth + 1,
                     expander: None,
                     eye: Some(inst.visible),
-                    icon: "PartDesign_Body",
+                    icon: if matches!(inst.of, InstanceOf::Assembly(_)) { "Geoassembly" } else { "PartDesign_Body" },
                     badge: Some("LinkOverlay"),
                     label,
                     selected: active && self.asm.sel.contains(&s),
                     tip: format!("{} (instance of {}){}\nDouble-click to edit the part", inst.name, match inst.of {
                         fc_assembly::InstanceOf::Part(p) => self.part_name(p),
-                        _ => "an assembly".into(),
+                        fc_assembly::InstanceOf::Assembly(a) => format!("the assembly {}, rigid", self.ws.assembly(a).map(|x| x.name.clone()).unwrap_or_default()),
                     }, if inst.grounded { "\nGrounded" } else { "" }),
                 },
             );
@@ -1561,16 +1695,13 @@ impl App {
                 });
             }
         }
+        self.exploded_tree_rows(ui, a, depth + 1, interactive);
         if let Some((s, double)) = act {
             let multi = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
             if double {
                 match s {
                     AsmSel::Joint(j) => self.edit_joint(j),
-                    AsmSel::Inst(i) => {
-                        if let Some(p) = self.inst_part(i) {
-                            self.switch_tab(Tab::Part(p));
-                        }
-                    }
+                    AsmSel::Inst(i) => self.open_instance(i),
                     _ => {}
                 }
             } else {
@@ -1623,7 +1754,7 @@ impl App {
                 g.row(ui, "Label", "", |ui| widgets::ro_value(ui, &inst.name));
                 let of = match inst.of {
                     fc_assembly::InstanceOf::Part(p) => self.part_name(p),
-                    _ => "assembly".into(),
+                    fc_assembly::InstanceOf::Assembly(a) => format!("{} (sub-assembly)", self.ws.assembly(a).map(|x| x.name.clone()).unwrap_or_default()),
                 };
                 g.row(ui, "Linked part", "", |ui| widgets::ro_value(ui, &of));
                 let mut gr = inst.grounded;

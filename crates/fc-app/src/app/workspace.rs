@@ -204,7 +204,7 @@ impl App {
         };
     }
 
-    fn unique_part_name(&self, base: &str) -> String {
+    pub(super) fn unique_part_name(&self, base: &str) -> String {
         let taken = |n: &str| self.ws.parts.iter().any(|p| p.name == n) || self.ws.assemblies.iter().any(|a| a.name == n);
         if !taken(base) {
             return base.to_string();

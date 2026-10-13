@@ -15,6 +15,10 @@ pub(super) enum Act {
     SaveAs,
     ExportStep,
     ExportStl,
+    ImportStep,
+    AsmInterference,
+    AsmBom,
+    AsmExplode,
     Undo,
     Redo,
     Delete,
@@ -71,8 +75,13 @@ impl App {
             Act::Open => self.open_dialog(),
             Act::Save => self.save(false),
             Act::SaveAs => self.save(true),
+            Act::ExportStep | Act::ExportStl if self.active_assembly().is_some() => self.asm_export_dialog(a == Act::ExportStl),
             Act::ExportStep => self.export(false),
             Act::ExportStl => self.export(true),
+            Act::ImportStep => self.import_step_dialog(),
+            Act::AsmInterference => self.start_interference(),
+            Act::AsmBom => self.start_bom(),
+            Act::AsmExplode => self.start_explode(None),
             Act::Undo => self.undo(),
             Act::Redo => self.redo(),
             Act::Delete => {
@@ -176,8 +185,14 @@ impl App {
             Act::Open => ("document-open", "Open...", "Opens a freecad-rs document or imports a FreeCAD .FCStd file", k("Ctrl+O"), idle),
             Act::Save => ("document-save", "Save", "Saves the active document", k("Ctrl+S"), idle),
             Act::SaveAs => ("document-save-as", "Save As...", "Saves the active document under a new file name", k("Ctrl+Shift+S"), idle),
+            Act::ExportStep if self.active_assembly().is_some() => ("Std_Export", "Export STEP...", "Exports the assembly as a structured STEP file (AP214 or AP242): parts, sub-assemblies, names and placements", String::new(), idle && self.asm_ref().is_some_and(|a| !a.instances.is_empty())),
+            Act::ExportStl if self.active_assembly().is_some() => ("Std_Export", "Export STL...", "Exports the posed parts of the assembly as one STL mesh", String::new(), idle && self.asm_ref().is_some_and(|a| !a.instances.is_empty())),
             Act::ExportStep => ("Std_Export", "Export STEP...", "Exports the body as a STEP file", String::new(), idle && self.doc.result().is_some()),
             Act::ExportStl => ("Std_Export", "Export STL...", "Exports the body as an STL mesh", String::new(), idle && self.doc.result().is_some()),
+            Act::ImportStep => ("Std_Import", "Import STEP...", "Imports a STEP file with its assembly structure: its parts and (sub-)assemblies are added to the document", String::new(), idle),
+            Act::AsmInterference => ("Part_Common", "Check Interference", "Lists the parts that overlap and shows the overlapping volume; measures the clearance between two parts", String::new(), idle && self.active_assembly().is_some()),
+            Act::AsmBom => ("Assembly_BillOfMaterials", "Create Bill of Materials", "Lists the parts of the assembly with quantities, part numbers, materials and masses; exports CSV", String::new(), idle && self.active_assembly().is_some()),
+            Act::AsmExplode => ("Assembly_ExplodedView", "Create Exploded View", "Creates an exploded view: steps that move selected parts, with a dragger, radial explosion and animation", String::new(), idle && self.active_assembly().is_some()),
             Act::Undo => ("edit-undo", "Undo", "Undoes the last change", k("Ctrl+Z"), self.can_undo()),
             Act::Redo => ("edit-redo", "Redo", "Redoes a previously undone change", k("Ctrl+Shift+Z"), self.can_redo()),
             Act::Delete => ("edit-delete", "Delete", "Deletes the selected item", "Del".into(), idle && (!self.tree_sel.is_empty() || !self.asm.sel.is_empty() || (self.fem.on && self.fem.sel.is_some()))),
@@ -251,6 +266,7 @@ impl App {
             b = b.shortcut_text(key);
         }
         let r = ui.add_enabled(enabled, b);
+        crate::widgets::reg(format!("menu:{title}"), r.rect);
         let r = if desc.is_empty() { r } else { r.on_hover_text(desc) };
         if r.clicked() {
             self.run(a);
@@ -269,6 +285,7 @@ impl App {
                 self.menu_item(ui, Act::NewPart);
                 self.menu_item(ui, Act::NewAssembly);
                 ui.separator();
+                self.menu_item(ui, Act::ImportStep);
                 self.menu_item(ui, Act::ExportStep);
                 self.menu_item(ui, Act::ExportStl);
             });
@@ -310,6 +327,13 @@ impl App {
                         }
                     });
                     self.menu_item(ui, Act::AsmConnector);
+                    ui.separator();
+                    self.menu_item(ui, Act::AsmExplode);
+                    self.menu_item(ui, Act::AsmBom);
+                    self.menu_item(ui, Act::AsmInterference);
+                    ui.separator();
+                    self.menu_item(ui, Act::ExportStep);
+                    self.menu_item(ui, Act::ExportStl);
                 });
             } else if self.fem.on && self.editor.is_none() {
                 ui.menu_button("Model", |ui| {
@@ -467,7 +491,8 @@ impl App {
             self.tb(ui, "origin", Act::ToggleOrigin, self.show_origin);
             // export dropdown
             let (_, _, _, _, en) = self.act_info(Act::ExportStep);
-            let r = crate::widgets::tool_button_resp(ui, &Action::new("export", "Std_Export", "Export", "Exports the body as STEP or STL", "").enabled(en));
+            let tip = if self.active_assembly().is_some() { "Exports the assembly as STEP (with its structure) or STL" } else { "Exports the body as STEP or STL" };
+            let r = crate::widgets::tool_button_resp(ui, &Action::new("export", "Std_Export", "Export", tip, "").enabled(en));
             egui::Popup::menu(&r).show(|ui| {
                 ui.set_min_width(170.0);
                 self.menu_item(ui, Act::ExportStep);
@@ -499,6 +524,11 @@ impl App {
                     self.tb(ui, &format!("joint:{}", n.to_lowercase()), Act::Joint(n), false);
                 }
                 self.tb(ui, "asmconnector", Act::AsmConnector, false);
+                tb_separator(ui);
+                tb_grip(ui);
+                self.tb(ui, "explode", Act::AsmExplode, matches!(self.asm.task, Some(super::assembly::AsmTask::Explode(_))));
+                self.tb(ui, "bom", Act::AsmBom, matches!(self.asm.task, Some(super::assembly::AsmTask::Bom(_))));
+                self.tb(ui, "interference", Act::AsmInterference, matches!(self.asm.task, Some(super::assembly::AsmTask::Interference(_))));
                 tb_separator(ui);
                 tb_grip(ui);
                 self.tb(ui, "edit", Act::Edit, false);

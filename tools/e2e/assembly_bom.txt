@@ -1,0 +1,50 @@
+# Assembly: bill of materials of Main = Plate + 3 Bolts + sub-assembly BoltPair (2 Bolts):
+# quantities, masses from the materials' densities, part number / material edited in the
+# table, flat totals, CSV export.
+wait 5
+asmtest bom
+wait 5
+expect tab assembly Main
+expect instances 5
+expect leaves 6
+at ui tb:bom
+click
+wait 4
+expect asmtask true
+expect bom Bolt 3
+expect bom BoltPair 1
+expect bom Plate 1
+expect bom_mass Bolt 0.0044674
+shot OUT/asm_bom.png
+at ui bom:Bolt:part_number
+click
+wait 2
+type M6-20
+wait 3
+key Tab
+wait 2
+expect meta Bolt part_number M6-20
+at ui combo:bom_mat:Plate
+click
+wait 3
+at ui opt:bom_mat:Plate:Steel-Generic
+click
+wait 3
+expect meta Plate material Steel-Generic
+expect bom_mass Plate 0.474
+at ui check:bom_flat
+click
+wait 3
+expect bom Bolt 5
+shot OUT/asm_bom_flat.png
+bomcsv OUT/asm_bom.csv
+expect file OUT/asm_bom.csv
+at ui task:ok
+click
+wait 3
+expect asmtask false
+expect meta Bolt part_number M6-20
+key Z cmd
+wait 4
+expect meta Bolt part_number 
+quit
