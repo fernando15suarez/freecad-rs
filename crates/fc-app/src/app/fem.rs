@@ -994,6 +994,7 @@ impl App {
                 JobMsg::Line(l) => {
                     d.rt.log.push_str(&l);
                     d.rt.log.push('\n');
+                    cap_log(&mut d.rt.log, LOG_CAP);
                 }
                 JobMsg::Meshed(mesh, log) => {
                     let surface = mesh.boundary();
@@ -1148,6 +1149,24 @@ impl App {
     }
 }
 
+/// The in-memory solver log keeps at most this many bytes (the newest output).
+pub const LOG_CAP: usize = 1 << 20;
+
+/// Drop the oldest lines of `log` so it stays within `cap` bytes (ccx can print gigabytes when
+/// a model misbehaves); a marker line says that output was cut.
+pub fn cap_log(log: &mut String, cap: usize) {
+    if log.len() <= cap {
+        return;
+    }
+    const MARK: &str = "[... earlier output dropped ...]\n";
+    let mut cut = log.len() - cap + MARK.len();
+    while !log.is_char_boundary(cut) {
+        cut += 1;
+    }
+    let cut = log[cut..].find('\n').map(|i| cut + i + 1).unwrap_or(cut);
+    log.replace_range(..cut, MARK);
+}
+
 /// Significant-digit formatting for values in the UI (4 significant digits).
 pub fn sig(v: f64) -> String {
     if v == 0.0 || !v.is_finite() {
@@ -1160,6 +1179,21 @@ pub fn sig(v: f64) -> String {
     let d = (3 - a.log10().floor() as i32).max(0) as usize;
     let s = format!("{v:.d$}");
     if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
+}
+
+#[cfg(test)]
+mod log_tests {
+    #[test]
+    fn log_is_capped() {
+        let mut s = String::new();
+        for i in 0..100_000 {
+            s.push_str(&format!("line {i}\n"));
+            super::cap_log(&mut s, 4096);
+        }
+        assert!(s.len() <= 4096);
+        assert!(s.starts_with("[... earlier"));
+        assert!(s.ends_with("line 99999\n"));
+    }
 }
 
 fn fem_worker(a: Analysis, mesh_only: bool, tx: mpsc::Sender<JobMsg>, cancel: Arc<AtomicBool>) {
@@ -1201,5 +1235,39 @@ fn fem_worker(a: Analysis, mesh_only: bool, tx: mpsc::Sender<JobMsg>, cancel: Ar
             let _ = tx.send(JobMsg::Solved(r));
         }
         Err(e) => fail(&tx, e),
+    }
+}
+
+/// fc-fem's own numbers for the e2e FEM scripts (same geometry and settings as the UI builds):
+/// `cargo test -p fc-app fem_reference -- --ignored --nocapture` (needs gmsh and ccx).
+#[cfg(test)]
+mod reference {
+    use super::*;
+
+    fn face_where(s: &fc_occt::Shape, f: impl Fn(&fc_occt::FaceInfo) -> bool) -> usize {
+        (1..=s.face_count()).find(|&i| s.face_info(i).map(|x| f(&x)).unwrap_or(false)).expect("face")
+    }
+
+    /// The UI's analysis: New Analysis + Material for Solid (Steel-Generic, MaterialSolid).
+    fn ui_analysis(shape: fc_occt::Shape, part: &str) -> Analysis {
+        let mut a = Analysis::new(ShapeSource::Shape(shape), Material::steel_generic());
+        a.shape_name = part.into();
+        a.materials = vec![fc_fem::MaterialAssignment { name: "MaterialSolid".into(), material: Material::steel_generic(), solids: vec![] }];
+        a
+    }
+
+    #[test]
+    #[ignore]
+    fn fem_reference_plate_hole() {
+        let doc = crate::demo::plate_hole_document();
+        let s = doc.result().unwrap().clone();
+        let x0 = face_where(&s, |f| f.kind == 0 && f.normal[0] < -0.99);
+        let x1 = face_where(&s, |f| f.kind == 0 && f.normal[0] > 0.99);
+        let mut a = ui_analysis(s.clone(), "Body");
+        a.fixed(vec![SubRef::face_of(&s, x0).unwrap()]);
+        a.pressure(vec![SubRef::face_of(&s, x1).unwrap()], 10.0, true);
+        a.mesh.max_size = 5.0;
+        let sol = fc_fem::solve(&a, &Default::default()).unwrap();
+        println!("plate_hole: faces {x0} {x1}, nodes {}, max|u| {:?}, max vM {:?}", sol.results.node_count(), sol.results.max_displacement().map(|e| e.value), sol.results.max_von_mises().map(|e| e.value));
     }
 }

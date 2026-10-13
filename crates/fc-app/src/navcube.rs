@@ -97,11 +97,20 @@ fn up_for(n: DVec3, cur_up: DVec3) -> DVec3 {
     }
 }
 
+/// Side of the cube's square area and its margin from the view's top-right corner.
+pub const SIZE: f32 = 140.0;
+pub const MARGIN: f32 = 6.0;
+
+/// The screen area the cube (with its rotate arrows) covers in `view`: overlays such as the
+/// FEM color bar stay out of it.
+pub fn area(view: Rect) -> Rect {
+    Rect::from_min_size(Pos2::new(view.right() - SIZE - MARGIN, view.top() + MARGIN), Vec2::splat(SIZE)).expand2(Vec2::new(4.0, 10.0))
+}
+
 /// Draw the cube for a camera with basis (right, up, fwd) into the top-right of `view`.
 /// Returns the requested navigation, if any.
 pub fn ui(ui: &mut egui::Ui, view: Rect, right: DVec3, up: DVec3, fwd: DVec3) -> Option<NavAction> {
-    let size = 140.0;
-    let area = Rect::from_min_size(Pos2::new(view.right() - size - 6.0, view.top() + 6.0), Vec2::splat(size));
+    let area = Rect::from_min_size(Pos2::new(view.right() - SIZE - MARGIN, view.top() + MARGIN), Vec2::splat(SIZE));
     let center = area.center();
     let s = 34.0f32; // pixels per cube unit
     let proj = |p: DVec3| center + Vec2::new(p.dot(right) as f32, -p.dot(up) as f32) * s;

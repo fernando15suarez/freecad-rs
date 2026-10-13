@@ -941,11 +941,19 @@ impl App {
     fn fem_draw_legend(&self, painter: &egui::Painter) {
         let Some(s) = &self.fem.shown else { return };
         let (name, unit) = field_label(self.fem.view.field);
+        // FreeCAD puts the bar on the right edge of the view; it starts below the navigation
+        // cube (and its title) so the two never overlap, and shrinks with the view.
         let vr = self.view_rect;
-        let right = vr.right() - self.vp.right_inset - 78.0;
-        let top = vr.top() + 215.0;
-        let h = (vr.bottom() - 90.0 - top).clamp(120.0, 460.0);
+        let free = Rect::from_min_max(vr.min, Pos2::new(vr.right() - self.vp.right_inset, vr.bottom()));
+        let cube = crate::navcube::area(free);
+        let right = free.right() - 78.0;
+        let top = cube.bottom() + 40.0;
+        let h = (vr.bottom() - 90.0 - top).clamp(60.0, 460.0);
         let bar = Rect::from_min_max(Pos2::new(right - 16.0, top), Pos2::new(right, top + h));
+        // a translucent backdrop keeps the labels readable over the model
+        let title_w = painter.layout_no_wrap(if unit.is_empty() { name.to_string() } else { format!("{name} ({unit})") }, theme::bold_font(13.0), Color32::WHITE).size().x;
+        let back = Rect::from_min_max(Pos2::new((bar.right() + 60.0 - title_w).min(bar.left()) - 8.0, bar.top() - 36.0), Pos2::new(bar.right() + 66.0, bar.bottom() + 34.0));
+        painter.rect_filled(back, 6.0, Color32::from_rgba_unmultiplied(24, 24, 24, 150));
         let n = 64;
         for i in 0..n {
             let t0 = i as f32 / n as f32;
@@ -955,7 +963,7 @@ impl App {
             painter.rect_filled(Rect::from_min_max(Pos2::new(bar.left(), y1), Pos2::new(bar.right(), y0 + 0.5)), 0.0, Color32::from_rgb((c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8));
         }
         painter.rect_stroke(bar, 0.0, Stroke::new(1.0, Color32::from_gray(20)), egui::StrokeKind::Outside);
-        let ticks = 10;
+        let ticks = ((h / 26.0) as usize).clamp(2, 10);
         let font = egui::FontId::proportional(12.0);
         let span = s.max - s.min;
         let exp = span.abs().max(s.max.abs()).max(s.min.abs());
@@ -983,8 +991,11 @@ impl App {
                 painter.circle(p, 5.0, Color32::from_rgb(255, 40, 40), Stroke::new(1.5, Color32::WHITE));
                 let text = format!("Max {} {unit}", sig(s.max));
                 let g = painter.layout_no_wrap(text, font, Color32::WHITE);
-                let r = Rect::from_min_size(p + Vec2::new(10.0, -g.size().y - 12.0), g.size() + Vec2::new(10.0, 6.0));
-                painter.line_segment([p, r.left_bottom()], Stroke::new(1.0, Color32::WHITE));
+                let size = g.size() + Vec2::new(10.0, 6.0);
+                // the label goes left of the marker when it would run into the legend or the panel
+                let left = p.x + 10.0 + size.x > back.left() - 4.0 && p.y > back.top() - size.y - 12.0 && p.y < back.bottom() + 12.0 || p.x + 10.0 + size.x > painter.clip_rect().right() - 4.0;
+                let r = if left { Rect::from_min_size(p + Vec2::new(-10.0 - size.x, -size.y - 12.0), size) } else { Rect::from_min_size(p + Vec2::new(10.0, -size.y - 12.0), size) };
+                painter.line_segment([p, if left { r.right_bottom() } else { r.left_bottom() }], Stroke::new(1.0, Color32::WHITE));
                 painter.rect(r, 3.0, Color32::from_rgba_unmultiplied(20, 20, 20, 210), Stroke::new(1.0, Color32::from_gray(90)), egui::StrokeKind::Inside);
                 painter.galley(r.min + Vec2::new(5.0, 3.0), g, Color32::WHITE);
             }

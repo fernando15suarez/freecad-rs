@@ -18,8 +18,16 @@ pub fn reg(name: impl Into<String>, rect: Rect) {
     RECTS.with(|r| r.borrow_mut().insert(name.into(), rect));
 }
 
+/// A registered widget's rect; a name ending in `*` matches by prefix (the first such name
+/// in sort order), for labels that carry values ("opt:fem_mode:Mode 3*").
 pub fn lookup(name: &str) -> Option<Rect> {
-    RECTS.with(|r| r.borrow().get(name).copied())
+    RECTS.with(|r| {
+        let r = r.borrow();
+        match name.strip_suffix('*') {
+            Some(pre) => r.iter().filter(|(k, _)| k.starts_with(pre)).min_by(|a, b| a.0.cmp(b.0)).map(|(_, v)| *v),
+            None => r.get(name).copied(),
+        }
+    })
 }
 
 pub fn clear_registry() {

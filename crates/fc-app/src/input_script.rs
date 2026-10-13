@@ -32,6 +32,8 @@
 //!   femwait [N]          wait until the FEM mesh/solve run finished (at most N frames)
 //!   expect fem_maxdisp V | fem_maxvm V | fem_f1 V (within 1 %) | fem_analyses N | fem_constraints N
 //!   expect fem_refs Face2,... | fem_mesh true | fem_result true | fem_error TEXT | fem_task true | fem_on true
+//!   expect fem_mode N (eigenmode shown, 1-based) | fem_kind NAME (type of the last constraint)
+//!   platedemo            load fc-fem's plate_hole geometry (200 x 100 x 10 plate, Ø20 hole)
 //!   shot PATH            save a screenshot
 //!   quit
 
@@ -108,7 +110,7 @@ pub fn parse(src: &str) -> Result<Vec<Step>, String> {
             "scroll" => Step::Scroll(f(1)? as f32, f(2)? as f32),
             "wait" => Step::Wait(f(1)? as u32),
             "expect" => Step::Expect(w.get(1).unwrap_or(&"").to_string(), w[2.min(w.len())..].join(" ")),
-            "demo" | "saveto" | "external" | "asmdemo" | "mark" | "open" | "femwait" => Step::Do(w[0].to_string(), line[w[0].len()..].trim().to_string()),
+            "demo" | "saveto" | "external" | "asmdemo" | "mark" | "open" | "femwait" | "platedemo" | "asmtest" | "exportstep" | "exportstl" | "importstep" | "bomcsv" | "explode" | "select" => Step::Do(w[0].to_string(), line[w[0].len()..].trim().to_string()),
             "shot" => Step::Shot(w.get(1).unwrap_or(&"").to_string()),
             "quit" => Step::Quit,
             other => return Err(format!("line {}: unknown step '{other}'", ln + 1)),

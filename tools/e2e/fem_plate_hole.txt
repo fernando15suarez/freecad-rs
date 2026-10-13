@@ -1,0 +1,110 @@
+# FEM: fc-fem's plate_hole geometry (200 x 100 x 10, Ø20 hole) pulled at one end with a
+# reversed Pressure (10 MPa = 10 kN tension), fixed at the other; Gravity task checked and
+# cancelled; Gmsh 5 mm quadratic tets. fc-fem's own value for these settings (see
+# `fem_reference_plate_hole` in crates/fc-app/src/app/fem.rs): max von Mises 29.83 MPa,
+# max |u| 0.01045 mm.
+wait 5
+platedemo
+wait 5
+at ui workbench
+click
+wait 3
+at ui wb:FEM
+click
+wait 3
+at ui tb:fem_analysis
+click
+wait 3
+at ui tb:fem_material
+click
+wait 3
+at ui task:ok
+click
+wait 3
+# Fixed on the x = 0 face
+at ui tb:fem_fixed
+click
+wait 3
+key 6
+wait 3
+at world 0 30 5
+click
+wait 3
+key 0
+wait 3
+at ui task:ok
+click
+wait 3
+# Pressure on the x = 200 face, reversed: it pulls (tension)
+at ui tb:fem_pressure
+click
+wait 3
+key 3
+wait 3
+at world 200 30 5
+click
+wait 3
+key 0
+wait 3
+expect fem_kind ConstraintPressure
+expect fem_refs Face2
+at ui fem:pressure
+click
+key A cmd
+type 10 MPa
+key Enter
+wait 2
+at ui check:Reverse direction
+click
+wait 3
+shot OUT/fem_pressure_task.png
+at ui task:ok
+click
+wait 3
+# Gravity: the task opens without references; Cancel removes the new object again
+at ui tb:fem_selfweight
+click
+wait 3
+expect fem_task true
+expect fem_kind ConstraintSelfWeight
+expect fem_constraints 3
+shot OUT/fem_selfweight_task.png
+at ui task:cancel
+click
+wait 3
+expect fem_constraints 2
+expect fem_kind ConstraintPressure
+shot OUT/fem_plate_constraints.png
+# mesh (OK meshes) and run
+at ui tb:fem_mesh
+click
+wait 3
+at ui fem:max_size
+click
+key A cmd
+type 5
+key Enter
+wait 2
+at ui task:ok
+click
+wait 2
+femwait 3000
+wait 3
+expect fem_mesh true
+at ui tb:fem_run
+click
+wait 3
+femwait 6000
+wait 5
+expect fem_result true
+expect fem_maxvm 29.83
+expect fem_maxdisp 0.01045
+key 2
+wait 3
+at world 100 37 10
+wait 3
+shot OUT/fem_plate_hole.png
+at ui task:close
+click
+wait 3
+quit

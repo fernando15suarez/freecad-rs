@@ -65,6 +65,21 @@ pub fn demo_document() -> Document {
     doc
 }
 
+/// fc-fem's plate_hole parity geometry: a 200 x 100 x 10 plate (corner at the origin) with a
+/// Ø20 hole in its middle, as one sketch (rectangle + circle) padded 10 mm.
+pub fn plate_hole_document() -> Document {
+    let mut doc = Document::new();
+    let (mut sk, _) = rect_sketch(0.0, 0.0, 200.0, 100.0);
+    let c = sk.add_geometry(Geometry { curve: Curve::Circle { c: v(100.0, 50.0), r: 10.0 }, construction: false });
+    sk.add_constraint(Constraint::new(K::Diameter(c, 20.0)));
+    sk.add_constraint(Constraint::new(K::LockX(pr(c, PointPos::Mid), 100.0)));
+    sk.add_constraint(Constraint::new(K::LockY(pr(c, PointPos::Mid), 50.0)));
+    let s = doc.add_sketch(Support::XY, sk);
+    doc.add(FeatureKind::Pad(Extrude::new(s, 10.0)));
+    doc.recompute();
+    doc
+}
+
 /// A pad of `sk` with through holes at `holes` (diameter `d`), on the top face.
 fn plate_with_holes(sk: Sketch, height: f64, holes: &[(f64, f64)], d: f64) -> (Document, FeatureId, FeatureId) {
     let mut doc = Document::new();

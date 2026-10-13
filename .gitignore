@@ -3,3 +3,8 @@
 *.step
 *.stl
 /out
+spooles.out
+/Mesh.*
+*.frd
+*.cvg
+*.sta

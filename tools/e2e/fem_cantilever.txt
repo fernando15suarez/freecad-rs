@@ -165,6 +165,37 @@ shot OUT/fem_disp_hover.png
 at ui task:close
 click
 wait 3
+# frequency analysis on the same mesh: fc-fem's parity f1 = 81.07 Hz; pick mode 3
+at ui tb:fem_solver
+click
+wait 3
+at ui fem:type:Frequency
+click
+wait 3
+at ui fem:run
+click
+wait 3
+femwait 6000
+wait 5
+expect fem_f1 81.07
+at ui task:close
+click
+wait 3
+at ui tb:fem_results
+click
+wait 3
+expect fem_mode 1
+at ui combo:fem_mode
+click
+wait 3
+at ui opt:fem_mode:Mode 3*
+click
+wait 3
+expect fem_mode 3
+shot OUT/fem_mode3.png
+at ui task:close
+click
+wait 3
 saveto OUT/fem_cantilever.fcrs
 wait 2
 quit

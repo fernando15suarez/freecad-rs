@@ -1445,7 +1445,9 @@ impl App {
                         let ok = got.zip(val.parse::<f64>().ok()).is_some_and(|(a, b)| (a - b).abs() <= 0.01 * b.abs());
                         Some(if ok { val.clone() } else { format!("{got:?}") })
                     }
-                    "fem_analyses" => Some(self.fem.docs.len().to_string()),
+                    "fem_mode" => Some((self.fem.view.mode + 1).to_string()),
+                "fem_kind" => self.fem_cur().and_then(|a| self.fem.docs[a].analysis.constraints.last().map(|c| c.kind.default_name().to_string())),
+                "fem_analyses" => Some(self.fem.docs.len().to_string()),
                     "fem_constraints" => self.fem_cur().map(|a| self.fem.docs[a].analysis.constraints.len().to_string()),
                     "fem_refs" => self.fem_cur().and_then(|a| self.fem.docs[a].analysis.constraints.last().map(|c| c.refs.iter().map(|r| r.name()).collect::<Vec<_>>().join(","))),
                     "fem_mesh" => self.fem_cur().map(|a| self.fem.docs[a].rt.mesh.is_some().to_string()),
@@ -1523,6 +1525,16 @@ impl App {
                 }
                 "mark" => {
                     run.marks = self.asm_ref().map(|a| a.instances.iter().map(|i| (i.name.clone(), i.placement)).collect()).unwrap_or_default();
+                }
+                "platedemo" => {
+                    let mut ws = fc_assembly::Workspace::new();
+                    ws.add_part("Body", crate::demo::plate_hole_document());
+                    self.load_workspace(ws);
+                    self.path = None;
+                    self.dirty = false;
+                    self.undo.clear();
+                    self.vp.set_standard_view(StandardView::Isometric);
+                    self.vp.fit_all();
                 }
                 "demo" => {
                     self.doc = crate::demo::demo_document();
