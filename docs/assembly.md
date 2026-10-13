@@ -56,20 +56,98 @@ FreeCAD maps each type to (`AssemblyObject::makeMbdJointOfType` / `makeMbdJointD
 
 ## Solver
 
-- **Unknowns.** Each free instance has 6 unknowns: a scaled incremental rotation vector (about the
-  instance origin) and a translation. The system is re-linearised at zero every iteration, and the
-  Jacobians are exact (forward AD over the 12 unknowns of a joint).
-- **Iteration.** Islands of free instances connected by joints are solved separately with
-  Levenberg–Marquardt minimum-norm steps. This gives minimal movement: underconstrained parts stay as close
-  as possible to where they are.
-- **Diagnosis.** A pivoted Cholesky of JJᵀ at the end gives the rank, so DOF = 6n − rank. Each dependent
-  equation is reported as *redundant* if the system converged, or *conflicting* (together with its
-  dependency group) if it did not. A failed solve leaves the parts where they were, like FreeCAD.
-- **Drag.** `Assembly::drag(instance, DragTarget::Frame | Point { local, world })` minimises the distance to
-  the target subject to the linearised joints. It uses a Schur complement on the constraints, where H⁻¹ is
-  a 6×6 block plus a scaled identity. A final exact joint solve then polishes the result.
-- **Speed (release build).** 200 parts (a 100-link revolute chain plus 100 fastened parts, 600 unknowns in
-  one island) solve in about 80 ms. A 20 mm drag of the chain's tip takes about 170 ms.
+`Assembly::solve` and `Assembly::drag` use a port of the OndselSolver position solve that FreeCAD 1.1 runs
+(`SolveMethod::Ondsel`, the default; `crates/fc-assembly/src/ondsel.rs`). Our original Levenberg–Marquardt
+solver is still available as `SolveMethod::LevenbergMarquardt`, and it is the fallback when the Newton
+iteration does not converge.
+
+### The Ondsel solve
+
+FreeCAD's call chain is `AssemblyObject::solve` → `ASMTAssembly::runPreDrag` → `System::runPreDrag` →
+`SystemSolver::runPreDrag` → `runPosIC` → `PosICNewtonRaphson::run`. What it computes, and where the port
+mirrors it:
+
+| Ondsel / FreeCAD | what it does | our port |
+|---|---|---|
+| `AssemblyObject::makeMbdPart` | every part gets mass 1 and inertias (1, 1, 1); its frame is the part placement | same weights for every instance |
+| `PartFrame::qX`, `qE`; `EulerParameters::calcABC` | unknowns per part: position and four Euler parameters (vector part first), rotation matrix `A(E) = (e3² − e·e) I + 2 e eᵀ + 2 e3 [e]×`, not normalised while iterating | `ondsel::rot_apply`, 7 coordinates per instance (`dual::NL` = 14 slots per joint) |
+| `EulerConstraint` | `E·E − 1 = 0` per part, second derivative 2I | one Euler row per instance |
+| `AssemblyObject::fixGroundedPart`, `ASMTFixedJoint` | grounded parts are pinned to the assembly by a fixed joint | grounded instances are constants |
+| `Part::fillqsuWeights` | `wX = 1e6·m/m_max + 1e3`, `wE[0..3] = 1e6·J/J_max + 1e3`, `wE[3] = 1e3` | `OndselOptions::inertia_ratio` (see below) |
+| `AnyPosICNewtonRaphson::fillY`, `fillPyPx` | Newton on the stationarity of `½ Σ (q − q_old)ᵀ W (q − q_old)` subject to all constraints: matrix `[−W + Σλ∂²G, Jᵀ; J, 0]` | same system (sign flipped). `λ∂²G` uses central differences of the exact joint gradients |
+| constraints' `fillPosICJacob` | closed-form `λ`-weighted second derivatives (`ppGpEpE`, ...) | same terms, numerically |
+| `GESpMatParPvMarkoFast` / `GESpMatParPvPrecise` | sparse Gaussian elimination | envelope LDLᵀ in body order (breadth first from the ground) |
+| `PosICNewtonRaphson::run`, `handleSingularMatrix`, `GESpMatFullPvPosIC` | equations found dependent are removed (`removeRedundantConstraints`) and the solve restarts | zero pivots of equations are skipped (multiplier step 0) |
+| `NewtonRaphson::isConvergedToNumericalLimit`, `iterMax` = 100 | iterate to the numerical limit, no line search | the same stopping idea, 100 iterations |
+| `ASMTAssembly::createMbD` | parts and joints sorted by name | (the stationary point does not depend on the order) |
+
+Our joint equations (`joint.rs`) are not Ondsel's in form, but they define the same constraint manifold.
+The stationary point of the weighted problem depends only on that manifold, so the result is the same.
+
+**Weights of FreeCAD 1.1.** FreeCAD 1.1.3 ships OndselSolver 1.0.1. Its results are reproduced exactly with
+`J/J_max = 1/3`, i.e. rotation weights `1e6/3 + 1e3`. The current OndselSolver sources compute `J/J_max = 1`.
+
+- `OndselOptions::FREECAD_1_1` (`inertia_ratio` = 1/3) is the default.
+- `OndselOptions::ONDSEL_MASTER` (`inertia_ratio` = 1) reproduces the current OndselSolver sources.
+
+We found the 1/3 by building OndselSolver from FreeCAD's sources and running it on FreeCAD's own model of
+each case (`tools/parity/assembly/ondsel/`, below). With the sources as they are, it agrees with FreeCAD 1.1.3
+in the determined cases but not in the free DOF (the hinge by 6 µm, the 4-bar by 2e-5 mm). Black-box probes
+of FreeCAD's solve near the hinge solution gave the ratio of rotation to translation weight as about a third
+of the sources' value. With `aJi/aJiMax = 1/3` in `Part::fillqsuWeights`, the source build matches FreeCAD
+1.1.3 in all 8 cases to 1e-15.
+
+### Islands, limits, diagnosis
+
+- **Islands.** Islands of free instances connected by joints are solved separately. This gives the same
+  result as one system, because the objective and the constraints separate. Unlike FreeCAD, an island
+  with no grounded part is still solved (FreeCAD drops joints that are not connected to ground).
+- **Limits.** FreeCAD's static solve ignores limits; only its drag enforces them
+  (`PosICDragLimitNewtonRaphson`). We enforce them in both, the way Ondsel's drag does: violated limits are
+  activated as equations and the solve is repeated from where the parts are.
+- **Diagnosis.** The LM Jacobian in 6-DOF tangent coordinates (a scaled rotation vector and a translation per
+  instance) is factored by a pivoted Cholesky of JJᵀ at the end. That gives the rank, so DOF = 6n − rank.
+  Each dependent equation is reported as *redundant* if the system converged, or *conflicting* (together
+  with its dependency group) if it did not. A failed solve leaves the parts where they were, like FreeCAD.
+
+### Drag
+
+FreeCAD's interactive drag (`AssemblyObject::preDrag` / `doDragStep` / `postDrag`) runs in three stages:
+
+1. The GUI's drag mode computes the dragged part's new placement.
+2. `ASMTAssembly::runDragStep` seeds that placement into the solver and runs `PosICDragNewtonRaphson`, the
+   same weighted Newton iteration, followed by `PosICDragLimitNewtonRaphson`. On failure it retries at
+   1/2, 1/4, 1/8 and 1/16 of the way (position lerp, Euler-parameter slerp), then restores the placements.
+3. `runPostDrag` runs the solve again.
+
+`Assembly::drag(instance, DragTarget::Frame | Point { local, world })` follows the same steps:
+
+1. **New placement of the dragged part.** We find the placement that brings the dragged part (or its
+   grabbed point) as close to the target as the joints allow. This is a constrained least-squares problem:
+   - a Schur complement is applied on the linearised joints;
+   - H⁻¹ is a 6×6 block plus a scaled identity.
+2. **Drag step.** The dragged part is seeded at that placement and held there; the other parts move by the
+   Ondsel minimum-movement solve. If the hold cannot be met exactly, the part is held by weights ×1e9
+   instead. The step is retried at 1/2 … 1/16 of the way, and the placements are restored if every try
+   fails.
+3. **Post-drag solve.** A solve from the result, which also produces the report.
+
+FreeCAD's own drag step writes per-part drag weights (1e6 for the dragged part's position, 1e3 elsewhere),
+but `Part::fillqsuWeights` then overwrites them with the normal weights. As a result, its single drag step
+leaves the dragged part between the cursor and the other parts. We hold the dragged part, which is the
+limit of repeated drag steps toward a fixed cursor.
+
+### Speed
+
+Release build, with 200 parts (a 100-link revolute chain plus 100 fastened parts, one island of 700
+unknowns + 600 equations):
+
+| | Ondsel port | before (LM) |
+|---|---|---|
+| solve | about 30 ms | about 80 ms |
+| 20 mm drag of the chain's tip | about 110 ms | about 170 ms |
+
+The full Newton converges in about 11 iterations on the chain.
 
 ## FreeCAD parity
 
@@ -79,31 +157,38 @@ FreeCAD maps each type to (`AssemblyObject::makeMbdJointOfType` / `makeMbdJointD
 2. It puts the moving parts at a chosen start pose and runs one `assembly.solve()`.
 3. It saves `<case>.FCStd` plus `assemblies.json` (JCS, element geometry, start and solved placements).
 
-`tests/parity.rs` checks two things:
+`tests/parity.rs` checks these things:
 
 - **JCS inference.** For every joint side, `infer_frame(element, vertex)` ∘ offset equals FreeCAD's
   `Placement1/2` to 1e-9.
-- **Solve.** We solve the same joints on the recorded JCS from the same start and compare with FreeCAD:
+- **Solve.** We solve the same joints on the recorded JCS from the same start. The default solver must
+  land on FreeCAD's placements to 1e-9 (mm and degrees) in every case, free DOF included. The old LM solver
+  is run as well, for comparison.
+- **OndselSolver itself.** `tools/parity/assembly/ondsel/` produces reference runs of OndselSolver:
+  1. `export_start.py` (freecadcmd) exports FreeCAD's Ondsel model of every case at its start pose
+     (`exportAsASMT`). FreeCAD 1.1.3 writes truncated joint type names, which the script repairs.
+  2. `run.sh` builds OndselSolver from FreeCAD's sources with a small driver (`drv.cpp`) that runs
+     `runPreDrag`.
+  3. It writes `ondsel_master.json` (the sources as they are) and `ondsel_r3.json`
+     (`aJi/aJiMax = 1/3`).
 
-| case | DOF | max Δpos (mm) | max Δrot (°) | |
-|---|---|---|---|---|
-| hinge (revolute on an edge) | 1 | 0.17 | 4.9 | free angle differs |
-| slider (face + vertex) | 1 | 3e-11 | 5e-10 | |
-| fourbar (4 revolutes, 3 redundant eq.) | 1 | 0.16 | 0.45 | free angle differs |
-| ball | 3 | 4e-12 | 3e-15 | |
-| fixed_stack (offset + rotation) | 0 | 2e-13 | 4e-13 | |
-| angle (revolute + Angle 30°) | 0 | 5e-12 | 1e-10 | |
-| distance (plane-plane 5 + point-point 15) | 2 | 2e-14 | 4e-3 | |
-| cylindrical (cylinder faces) | 2 | 3e-14 | 9e-4 | |
+  `ondsel_solver_parity` checks two things: `ondsel_r3.json` equals FreeCAD's results, and our port with
+  `OndselOptions::ONDSEL_MASTER` equals `ondsel_master.json` to 1e-9.
 
-The determined cases match exactly, and so do the mechanisms whose free DOF both solvers resolve by pure
-projection. For the hinge and the 4-bar, both results satisfy the joints but stop at a different value of
-the free rotation:
+| case | DOF | Ondsel port: max Δpos (mm) | max Δrot (°) | before (LM): max Δpos (mm) | max Δrot (°) |
+|---|---|---|---|---|---|
+| hinge (revolute on an edge) | 1 | 3e-14 | 4e-13 | 0.17 | 4.9 |
+| slider (face + vertex) | 1 | 0 | 6e-30 | 3e-11 | 5e-10 |
+| fourbar (4 revolutes, 3 redundant eq.) | 1 | 3e-35 | 1e-14 | 0.16 | 0.45 |
+| ball | 3 | 0 | 3e-15 | 4e-12 | 3e-15 |
+| fixed_stack (offset + rotation) | 0 | 4e-15 | 6e-15 | 2e-13 | 4e-13 |
+| angle (revolute + Angle 30°) | 0 | 1e-27 | 1e-14 | 5e-12 | 1e-10 |
+| distance (plane-plane 5 + point-point 15) | 2 | 2e-15 | 4e-22 | 2e-14 | 4e-3 |
+| cylindrical (cylinder faces) | 2 | 4e-22 | 2e-15 | 3e-14 | 9e-4 |
 
-- FreeCAD's Newton iteration in Ondsel's coordinates turned the hinge plate on from 40° to 44.9°.
-- Our minimum-norm step, in length-scaled coordinates, keeps it nearer the start.
-
-The DOF counts agree with FreeCAD's joint semantics; the 4-bar is 18 − rank 17 = 1.
+Before the port, the hinge and the 4-bar stopped at a different angle of the free rotation:
+FreeCAD turned the hinge plate from 40° to 44.9°, while LM's minimum-norm steps in length-scaled coordinates
+kept it nearer 40°. The DOF counts agree with FreeCAD's joint semantics; the 4-bar is 18 − rank 17 = 1.
 
 `freecad_fcstd_import` imports every `.FCStd`, then checks that solving moves nothing and gives the same
 DOF (`fc_assembly::fcstd`).

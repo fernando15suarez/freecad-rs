@@ -1,11 +1,15 @@
-//! Forward-mode automatic differentiation over the 12 local unknowns of a joint
-//! (6 per instance side: scaled rotation vector, then translation). Every residual row
-//! gets an exact gradient, which the rank analysis relies on (same approach as
+//! Forward-mode automatic differentiation over the local unknowns of a joint: 7 slots per
+//! instance side. The Ondsel solve ([`crate::ondsel`]) uses all 7 (position, then the four
+//! Euler parameters); the tangent-space diagnosis and the Levenberg–Marquardt solver use
+//! the first 6 of each side (scaled rotation vector, then translation). Every residual
+//! row gets an exact gradient, which the rank analysis relies on (same approach as
 //! fc-sketch's `dual.rs`).
 
 use std::ops::{Add, Mul, Neg, Sub};
 
-pub const NL: usize = 12;
+pub const NL: usize = 14;
+/// Slot offset of the second (J) side.
+pub const SIDE_B: usize = 7;
 
 #[derive(Clone, Copy, Debug)]
 pub struct D {

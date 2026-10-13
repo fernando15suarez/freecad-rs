@@ -15,6 +15,7 @@ pub mod geom;
 pub mod interference;
 pub mod joint;
 pub mod model;
+pub mod ondsel;
 pub mod solver;
 pub mod structure;
 
@@ -31,7 +32,8 @@ pub use model::{
     Instance, InstanceId, InstanceOf, JointId, MapResolver, NoGeometry, PartEntry, PartId, PartMeta, PartResolver, Workspace,
     WorkspaceError, WORKSPACE_VERSION,
 };
-pub use solver::{DragTarget, SolveError, SolveOptions, SolveReport, SolveStatus};
+pub use ondsel::OndselOptions;
+pub use solver::{DragTarget, SolveError, SolveMethod, SolveOptions, SolveReport, SolveStatus};
 
 impl Workspace {
     /// Solve an assembly against this workspace's part geometry.

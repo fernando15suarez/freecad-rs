@@ -6,8 +6,15 @@
 //! solve started from, and FreeCAD's solved placements. Here we
 //! 1. re-derive every JCS from the element geometry with our port of `findPlacement`, and
 //! 2. solve the same joints from the same start and compare with FreeCAD's placements.
-//! Determined cases (0 DOF) must match exactly; for mechanisms with free DOF both
-//! solvers return *a* nearby solution, so we check the joints and report the difference.
+//! The default solver (our port of Ondsel's position solve, `fc_assembly::ondsel`) must
+//! land where FreeCAD does in every case, including the free DOF of the mechanisms. The
+//! old Levenberg–Marquardt solver is run too and its distance to FreeCAD is reported.
+//!
+//! `tools/parity/assembly/ondsel/` runs OndselSolver itself (built from FreeCAD's sources)
+//! on the same cases: `ondsel_master.json` with the current sources' weights and
+//! `ondsel_r3.json` with rotation weights for `aJi/aJiMax = 1/3`, which is what FreeCAD
+//! 1.1.3 (OndselSolver 1.0.1) computes. Both are checked against our solver with the
+//! corresponding [`OndselOptions`].
 
 use fc_assembly::*;
 use serde_json::Value;
@@ -79,81 +86,127 @@ struct Row {
     dof: usize,
     worst_pos: f64,
     worst_rot_deg: f64,
+    lm_pos: f64,
+    lm_rot_deg: f64,
+}
+
+/// Largest position (mm) and rotation (degrees) difference between our instances and
+/// reference placements.
+fn worst(asm: &Assembly, refs: &dyn Fn(&str) -> Option<Frame>) -> (f64, f64) {
+    let (mut wp, mut wr) = (0.0f64, 0.0f64);
+    for inst in &asm.instances {
+        let Some(fc) = refs(&inst.name) else { continue };
+        let (dp, dr) = inst.placement.distance_to(&fc);
+        wp = wp.max(dp);
+        wr = wr.max(dr.to_degrees());
+    }
+    (wp, wr)
+}
+
+/// A placement written by the OndselSolver driver (position and row-major rotation matrix).
+fn ondsel_frame(v: &Value) -> Frame {
+    let m: Vec<f64> = v["matrix"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+    Frame::from_axes(v3(&v["pos"]), [[m[0], m[3], m[6]], [m[1], m[4], m[7]], [m[2], m[5], m[8]]])
+}
+
+/// Builds the case's assembly at its start pose with the joints on FreeCAD's JCS, and
+/// checks our JCS inference on the way.
+fn build_case(c: &Value) -> Assembly {
+    let name = c["name"].as_str().unwrap();
+    let mut asm = Assembly::new(name);
+    let mut ids = std::collections::HashMap::new();
+    for (k, p) in c["parts"].as_array().unwrap().iter().enumerate() {
+        let n = p["name"].as_str().unwrap();
+        let id = asm.add_part_instance(n, k as u32 + 1, frame(&c["start"][n]));
+        asm.set_grounded(id, p["grounded"].as_bool().unwrap());
+        ids.insert(n.to_string(), id);
+    }
+    for j in c["joints"].as_array().unwrap() {
+        let kind = kind_of(j);
+        // 1. JCS inference parity.
+        let distance = matches!(kind, JointKind::Distance { .. });
+        for (s, g, vtx, plc, off) in [("1", "geom1", "vtx1", "placement1", "offset1"), ("2", "geom2", "vtx2", "placement2", "offset2")] {
+            let r = &j[format!("ref{s}")];
+            let same = r[1] == r[2];
+            let eg = geom(&j[g]).unwrap();
+            let vg = if same { None } else { geom(&j[vtx]) };
+            let ours = infer_frame(&eg, vg.as_ref(), distance).mul(&frame(&j[off]));
+            let fc = frame(&j[plc]);
+            assert!(ours.is_same(&fc, 1e-9), "{name} {} side {s}: ours {ours:?} FreeCAD {fc:?}", j["name"]);
+        }
+        // 2. Same joint on the recorded JCS.
+        let ia = ids[j["ref1"][0].as_str().unwrap()];
+        let ib = ids[j["ref2"][0].as_str().unwrap()];
+        asm.add_joint(Joint::new(kind, JointRef::frame(ia, frame(&j["placement1"])), JointRef::frame(ib, frame(&j["placement2"]))));
+    }
+    asm
 }
 
 #[test]
 fn freecad_assembly_parity() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools/parity/assembly/assemblies.json");
     let cases: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    // Expected remaining DOF, and whether the case is determined (must match FreeCAD).
+    // Expected remaining DOF.
     let expect = |name: &str| match name {
-        "hinge" => (1, false),
-        "slider" => (1, false),
-        "fourbar" => (1, false),
-        "ball" => (3, false),
-        "fixed_stack" => (0, true),
-        "angle" => (0, true),
-        "distance" => (2, false),
-        "cylindrical" => (2, false),
+        "hinge" | "slider" | "fourbar" => 1,
+        "ball" => 3,
+        "fixed_stack" | "angle" => 0,
+        "distance" | "cylindrical" => 2,
         n => panic!("unknown case {n}"),
     };
     let mut rows = vec![];
     for c in &cases {
         let name = c["name"].as_str().unwrap();
-        let mut asm = Assembly::new(name);
-        let mut ids = std::collections::HashMap::new();
-        for (k, p) in c["parts"].as_array().unwrap().iter().enumerate() {
-            let n = p["name"].as_str().unwrap();
-            let id = asm.add_part_instance(n, k as u32 + 1, frame(&c["start"][n]));
-            asm.set_grounded(id, p["grounded"].as_bool().unwrap());
-            ids.insert(n.to_string(), id);
-        }
-        for j in c["joints"].as_array().unwrap() {
-            let kind = kind_of(j);
-            // 1. JCS inference parity.
-            let distance = matches!(kind, JointKind::Distance { .. });
-            for (s, g, vtx, plc, off) in [("1", "geom1", "vtx1", "placement1", "offset1"), ("2", "geom2", "vtx2", "placement2", "offset2")] {
-                let r = &j[format!("ref{s}")];
-                let same = r[1] == r[2];
-                let eg = geom(&j[g]).unwrap();
-                let vg = if same { None } else { geom(&j[vtx]) };
-                let ours = infer_frame(&eg, vg.as_ref(), distance).mul(&frame(&j[off]));
-                let fc = frame(&j[plc]);
-                assert!(ours.is_same(&fc, 1e-9), "{name} {} side {s}: ours {ours:?} FreeCAD {fc:?}", j["name"]);
-            }
-            // 2. Same joint on the recorded JCS.
-            let ia = ids[j["ref1"][0].as_str().unwrap()];
-            let ib = ids[j["ref2"][0].as_str().unwrap()];
-            asm.add_joint(Joint::new(kind, JointRef::frame(ia, frame(&j["placement1"])), JointRef::frame(ib, frame(&j["placement2"]))));
-        }
+        let fc = |n: &str| Some(frame(&c["solved"][n]));
+        let start = build_case(c);
+        let mut asm = start.clone();
         let rep = asm.solve(&NoGeometry, &SolveOptions::default());
         assert!(rep.ok(), "{name}: {rep:?}");
-        let (dof, determined) = expect(name);
+        let dof = expect(name);
         assert_eq!(rep.dof, dof, "{name}: {rep:?}");
-        let (mut wp, mut wr) = (0.0f64, 0.0f64);
-        for inst in &asm.instances {
-            let fc = frame(&c["solved"][&inst.name]);
-            let (dp, dr) = inst.placement.distance_to(&fc);
-            wp = wp.max(dp);
-            wr = wr.max(dr.to_degrees());
-            if determined {
-                assert!(dp < 1e-6 && dr < 1e-8, "{name}/{}: ours {:?} FreeCAD {fc:?}", inst.name, inst.placement);
-            }
-        }
-        // Mechanisms whose free DOF Ondsel and we resolve the same way (pure projections)
-        // must match too; hinge and 4-bar end at a slightly different angle of the free
-        // rotation (documented in docs/assembly.md).
-        if matches!(name, "slider" | "ball" | "distance" | "cylindrical") {
-            assert!(wp < 1e-6 && wr < 0.01, "{name}: Δpos {wp} Δrot {wr}°");
-        }
-        rows.push(Row { case: name.to_string(), dof: rep.dof, worst_pos: wp, worst_rot_deg: wr });
+        let (wp, wr) = worst(&asm, &fc);
+        // Every case, free DOF included, lands where FreeCAD 1.1 does.
+        assert!(wp < 1e-9 && wr < 1e-9, "{name}: Δpos {wp} mm, Δrot {wr}°");
+        // The old solver: same joints satisfied, but its own choice of the free DOF.
+        let mut lm = start.clone();
+        let rep = lm.solve(&NoGeometry, &SolveOptions { method: SolveMethod::LevenbergMarquardt, ..Default::default() });
+        assert!(rep.ok() && rep.dof == dof, "{name} (LM): {rep:?}");
+        let (lp, lr) = worst(&lm, &fc);
+        rows.push(Row { case: name.to_string(), dof: rep.dof, worst_pos: wp, worst_rot_deg: wr, lm_pos: lp, lm_rot_deg: lr });
     }
-    eprintln!("case          DOF  max |Δpos| mm  max |Δrot| deg");
+    eprintln!("case          DOF  Ondsel port: max |Δpos| mm  max |Δrot| deg   LM: max |Δpos| mm  max |Δrot| deg");
     for r in &rows {
-        eprintln!("{:<13} {:>3}  {:>13.3e}  {:>14.3e}", r.case, r.dof, r.worst_pos, r.worst_rot_deg);
+        eprintln!("{:<13} {:>3}  {:>27.3e}  {:>14.3e}  {:>17.3e}  {:>14.3e}", r.case, r.dof, r.worst_pos, r.worst_rot_deg, r.lm_pos, r.lm_rot_deg);
     }
 }
 
+/// OndselSolver itself (built from FreeCAD's sources by `tools/parity/assembly/ondsel/run.sh`)
+/// on the same start poses: with the current sources' weights our port matches
+/// `ondsel_master.json`, and the `aJi/aJiMax = 1/3` run (`ondsel_r3.json`) is FreeCAD 1.1.3.
+#[test]
+fn ondsel_solver_parity() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools/parity/assembly");
+    let cases: Vec<Value> = serde_json::from_str(&std::fs::read_to_string(format!("{dir}/assemblies.json")).unwrap()).unwrap();
+    let master: Value = serde_json::from_str(&std::fs::read_to_string(format!("{dir}/ondsel/ondsel_master.json")).unwrap()).unwrap();
+    let r3: Value = serde_json::from_str(&std::fs::read_to_string(format!("{dir}/ondsel/ondsel_r3.json")).unwrap()).unwrap();
+    for c in &cases {
+        let name = c["name"].as_str().unwrap();
+        // The 1/3 run is FreeCAD's result.
+        let ondsel = |v: &Value, n: &str| v[name].get(n).map(ondsel_frame);
+        for p in c["parts"].as_array().unwrap() {
+            let n = p["name"].as_str().unwrap();
+            let (dp, dr) = ondsel(&r3, n).unwrap().distance_to(&frame(&c["solved"][n]));
+            assert!(dp < 1e-12 && dr < 1e-12, "{name}/{n}: OndselSolver (1/3) vs FreeCAD {dp} {dr}");
+        }
+        // Our port with the current sources' weights matches OndselSolver master.
+        let mut asm = build_case(c);
+        let opts = SolveOptions { ondsel: OndselOptions::ONDSEL_MASTER, ..Default::default() };
+        let rep = asm.solve(&NoGeometry, &opts);
+        assert!(rep.ok(), "{name}: {rep:?}");
+        let (wp, wr) = worst(&asm, &|n| ondsel(&master, n));
+        assert!(wp < 1e-9 && wr < 1e-9, "{name}: vs OndselSolver master Δpos {wp} mm, Δrot {wr}°");
+    }
+}
 /// The saved FreeCAD documents import (parts, grounding, joints on their JCS) and are
 /// already solved for us: solving moves nothing and gives FreeCAD's DOF.
 #[test]

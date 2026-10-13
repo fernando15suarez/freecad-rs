@@ -9,11 +9,15 @@
 //! rotation like the displacement it causes at the size of the parts.
 //!
 //! Residuals come from [`crate::joint`] with exact gradients (forward AD, [`crate::dual`]).
-//! Each connected island of free instances is solved on its own with Levenberg–Marquardt
+//!
+//! The default solve ([`SolveMethod::Ondsel`]) is a port of FreeCAD 1.1's OndselSolver
+//! position solve, see [`crate::ondsel`]: it places under-constrained parts exactly where
+//! FreeCAD does. The original solver below stays available as
+//! [`SolveMethod::LevenbergMarquardt`] (and is the fallback when Newton fails):
+//! each connected island of free instances is solved on its own with Levenberg–Marquardt
 //! (minimum-norm Gauss–Newton steps `δ = -Jᵀ(JJᵀ + λI)⁻¹ r`, or the equivalent normal
 //! equations when there are fewer unknowns than equations), so underconstrained parts
-//! move as little as possible from where they are — the same "nearest solution" behaviour
-//! FreeCAD's Ondsel solver and Onshape show.
+//! move as little as possible (in its own metric) from where they are.
 //!
 //! Diagnosis (like fc-sketch's): at the end, a pivoted Cholesky factorisation of `JJᵀ`
 //! picks a maximal independent set of equations. `rank` gives the remaining degrees of
@@ -26,6 +30,7 @@ use crate::frame::{Frame, M3};
 use crate::geom::{infer_frame, ElementGeom, ImplicitPoint, RefKind};
 use crate::joint::{distance_mode, is_zero_angle, DistanceMode, Joint, JointKind, JointRef, Sense};
 use crate::model::{Assembly, InstanceId, InstanceOf, JointId, PartId, PartResolver};
+use crate::ondsel::{self, OndselOptions};
 use fc_part::placement::{dot, norm, sub};
 use fc_part::V3;
 use nalgebra::{DMatrix, DVector};
@@ -35,17 +40,35 @@ use std::f64::consts::PI;
 
 #[derive(Clone, Debug)]
 pub struct SolveOptions {
+    /// Iteration limit of the Levenberg–Marquardt solver and of the drag goal search.
     pub max_iterations: usize,
     /// Convergence: max |residual| (mm for distances, radians for angles).
     pub tolerance: f64,
     /// Run the rank analysis (DOF, redundant/conflicting joints).
     pub diagnose: bool,
+    /// Which solver places under-constrained parts.
+    pub method: SolveMethod,
+    /// Weights and limits of the Ondsel solve.
+    pub ondsel: OndselOptions,
 }
 
 impl Default for SolveOptions {
     fn default() -> Self {
-        SolveOptions { max_iterations: 200, tolerance: 1e-10, diagnose: true }
+        SolveOptions { max_iterations: 200, tolerance: 1e-10, diagnose: true, method: SolveMethod::Ondsel, ondsel: OndselOptions::default() }
     }
+}
+
+/// The solver behind [`Assembly::solve`] and [`Assembly::drag`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SolveMethod {
+    /// Port of OndselSolver's position solve (FreeCAD 1.1): Newton on the weighted
+    /// minimum-movement problem in positions and Euler parameters ([`crate::ondsel`]).
+    /// Falls back to Levenberg–Marquardt if it does not converge.
+    #[default]
+    Ondsel,
+    /// Our original solver: Levenberg–Marquardt minimum-norm steps in length-scaled
+    /// tangent coordinates.
+    LevenbergMarquardt,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,7 +216,7 @@ pub(crate) fn resolve_ref(asm: &Assembly, res: &dyn PartResolver, r: &JointRef, 
 // Equations
 
 #[derive(Clone, Copy, Debug)]
-enum Eq {
+pub(crate) enum Eq {
     /// rIJ = 0 (3)
     AtPoint,
     /// rIJ·xI = rIJ·yI = 0 (2)
@@ -226,11 +249,11 @@ enum Eq {
 
 
 /// World JCS of a side, as duals over the local 12 slots.
-struct WM {
-    p: DV,
-    x: DV,
-    y: DV,
-    z: DV,
+pub(crate) struct WM {
+    pub p: DV,
+    pub x: DV,
+    pub y: DV,
+    pub z: DV,
 }
 
 fn wrap_near(a: f64, reference: f64) -> f64 {
@@ -263,7 +286,7 @@ fn log_factor(s: D, c: D) -> D {
     }
 }
 
-fn eval_eq(eq: &Eq, i: &WM, j: &WM, out: &mut Vec<D>) {
+pub(crate) fn eval_eq(eq: &Eq, i: &WM, j: &WM, out: &mut Vec<D>) {
     let r = dual::vsub(&j.p, &i.p);
     match *eq {
         Eq::AtPoint => out.extend_from_slice(&r),
@@ -332,11 +355,11 @@ fn eval_eq(eq: &Eq, i: &WM, j: &WM, out: &mut Vec<D>) {
 /// A joint prepared for solving: resolved sides (sense and offsets folded into `b`) and
 /// its equations.
 #[derive(Clone, Debug)]
-struct Plan {
-    id: JointId,
-    a: Side,
-    b: Side,
-    eqs: Vec<Eq>,
+pub(crate) struct Plan {
+    pub id: JointId,
+    pub a: Side,
+    pub b: Side,
+    pub eqs: Vec<Eq>,
     /// Limits not yet active: (is_length, bound, is_min).
     limits: Vec<(bool, f64, bool)>,
 }
@@ -551,11 +574,11 @@ fn build_plan(asm: &Assembly, res: &dyn PartResolver, ji: usize, pl: &[Frame]) -
 // ---------------------------------------------------------------------------------------
 // The numeric system of one island
 
-struct Island {
+pub(crate) struct Island {
     /// Instance indices of the free instances (column blocks).
-    insts: Vec<usize>,
+    pub insts: Vec<usize>,
     /// Plan indices.
-    plans: Vec<usize>,
+    pub plans: Vec<usize>,
 }
 
 struct Eval {
@@ -574,7 +597,7 @@ fn eval_island(isl: &Island, plans: &[Plan], col_of: &HashMap<usize, usize>, pl:
         let ca = col_of.get(&p.a.inst).copied();
         let cb = col_of.get(&p.b.inst).copied();
         let wi = marker_wm(&pl[p.a.inst], &p.a.local, ca.map(|_| 0), inv_l);
-        let wj = marker_wm(&pl[p.b.inst], &p.b.local, cb.map(|_| 6), inv_l);
+        let wj = marker_wm(&pl[p.b.inst], &p.b.local, cb.map(|_| dual::SIDE_B), inv_l);
         let start = rows.len();
         for e in &p.eqs {
             eval_eq(e, &wi, &wj, &mut rows);
@@ -599,7 +622,7 @@ fn eval_island(isl: &Island, plans: &[Plan], col_of: &HashMap<usize, usize>, pl:
                 }
                 if let Some(c) = cb {
                     for k in 0..6 {
-                        j[(row, c * 6 + k)] += g[6 + k];
+                        j[(row, c * 6 + k)] += g[dual::SIDE_B + k];
                     }
                 }
             }
@@ -832,8 +855,37 @@ fn col_map(isl: &Island) -> HashMap<usize, usize> {
 /// instance, in `asm.instances` order).
 pub fn compute_solve(asm: &Assembly, res: &dyn PartResolver, opts: &SolveOptions) -> (SolveReport, Vec<Frame>) {
     let start: Vec<Frame> = asm.instances.iter().map(|i| i.placement).collect();
+    let ones = vec![1.0; start.len()];
+    solve_from(asm, res, opts, &start, &start, &ones)
+}
+
+/// One island with the selected method. Ondsel: minimum weighted movement from `q_old`
+/// (LM from the current placements if Newton fails); LM: minimum-norm steps.
+#[allow(clippy::too_many_arguments)]
+fn run_island(isl: &Island, plans: &[Plan], cols: &HashMap<usize, usize>, pl: &mut [Frame], q_old: &[Frame], wmul: &[f64], inv_l: f64, opts: &SolveOptions) -> (bool, usize) {
+    if opts.method == SolveMethod::Ondsel {
+        let before: Vec<Frame> = isl.insts.iter().map(|&i| pl[i]).collect();
+        let out = ondsel::solve_island(isl, plans, pl, q_old, wmul, &opts.ondsel, opts.tolerance);
+        if out.converged {
+            return (true, out.iterations);
+        }
+        for (&i, f) in isl.insts.iter().zip(before) {
+            pl[i] = f;
+        }
+        let (ok, its) = solve_island(isl, plans, cols, pl, inv_l, opts);
+        return (ok, its + out.iterations);
+    }
+    solve_island(isl, plans, cols, pl, inv_l, opts)
+}
+
+/// The solve behind [`compute_solve`] and the drag step. The joints are prepared (sense,
+/// coupling constants) at the assembly's placements; the iteration starts at `init`;
+/// `q_old` are the placements the Ondsel solve keeps the parts close to and `wmul`
+/// scales each instance's weights.
+fn solve_from(asm: &Assembly, res: &dyn PartResolver, opts: &SolveOptions, init: &[Frame], q_old: &[Frame], wmul: &[f64]) -> (SolveReport, Vec<Frame>) {
+    let start: Vec<Frame> = init.to_vec();
+    let prep = prepare(asm, res, &asm.instances.iter().map(|i| i.placement).collect::<Vec<_>>());
     let mut pl = start.clone();
-    let prep = prepare(asm, res, &pl);
     let mut plans = prep.plans;
     let inv_l = prep.inv_l;
     let isls = islands(asm, &plans, None);
@@ -862,8 +914,9 @@ pub fn compute_solve(asm: &Assembly, res: &dyn PartResolver, opts: &SolveOptions
     let mut total_rank = 0;
     for mut isl in isls {
         let cols = col_map(&isl);
-        let (mut ok, mut its) = solve_island(&isl, &plans, &cols, &mut pl, inv_l, opts);
-        // Active-set limits: turn violated bounds into equalities and solve again.
+        let (mut ok, mut its) = run_island(&isl, &plans, &cols, &mut pl, q_old, wmul, inv_l, opts);
+        // Active-set limits: turn violated bounds into equalities and solve again (for
+        // Ondsel, from where the parts are, like `PosICDragLimitNewtonRaphson`).
         for _round in 0..8 {
             let mut changed = false;
             for &pi in &isl.plans.clone() {
@@ -901,7 +954,8 @@ pub fn compute_solve(asm: &Assembly, res: &dyn PartResolver, opts: &SolveOptions
                 break;
             }
             isl.plans.sort_unstable();
-            let (o, i2) = solve_island(&isl, &plans, &cols, &mut pl, inv_l, opts);
+            let here = pl.clone();
+            let (o, i2) = run_island(&isl, &plans, &cols, &mut pl, &here, wmul, inv_l, opts);
             ok = o;
             its += i2;
         }
@@ -1080,9 +1134,46 @@ pub fn compute_drag(asm: &Assembly, res: &dyn PartResolver, instance: InstanceId
             prev_goal = gn;
         }
     }
-    // Polish: exact joint solve from the dragged pose (nearest solution).
+    let pl2 = if opts.method == SolveMethod::Ondsel {
+        // Ondsel's drag step (`ASMTAssembly::runDragStep` → `PosICDragNewtonRaphson`): the
+        // dragged part is seeded at its new placement (found above, as FreeCAD's drag modes
+        // do in the GUI) and held there by heavy weights while the other parts move by
+        // Ondsel's minimum weighted movement. On failure the step is retried at
+        // 1/2, 1/4, 1/8, 1/16 of the way (position lerp, Euler-parameter slerp).
+        let goal = pl[di];
+        let ones = vec![1.0; start.len()];
+        let mut wmul = ones.clone();
+        wmul[di] = DRAG_HOLD;
+        // The dragged part held exactly (as a grounded part of this step), or, if its new
+        // placement is not quite reachable, by heavy weights.
+        let mut held = asm.clone();
+        held.instances[di].grounded = true;
+        let mut done = None;
+        'attempts: for attempt in 0..5 {
+            let f = 0.5f64.powi(attempt);
+            let t = if attempt == 0 { goal } else { interpolate(&start[di], &goal, f) };
+            let mut init = start.clone();
+            init[di] = t;
+            for (a, w) in [(&held, &ones), (asm, &wmul)] {
+                let (rep, out) = solve_from(a, res, &SolveOptions { diagnose: false, ..opts.clone() }, &init, &init, w);
+                if rep.ok() {
+                    done = Some(out);
+                    break 'attempts;
+                }
+            }
+        }
+        match done {
+            Some(out) => out,
+            // `restorePosRot`: stay where we were.
+            None => start.clone(),
+        }
+    } else {
+        pl
+    };
+    // Post-drag solve (`runPostDrag` = `runPreDrag`) from the dragged pose; it also gives
+    // the report.
     let mut tmp = asm.clone();
-    for (inst, f) in tmp.instances.iter_mut().zip(pl.iter()) {
+    for (inst, f) in tmp.instances.iter_mut().zip(pl2.iter()) {
         inst.placement = *f;
     }
     let (mut rep, pl2) = compute_solve(&tmp, res, opts);
@@ -1099,6 +1190,28 @@ pub fn compute_drag(asm: &Assembly, res: &dyn PartResolver, instance: InstanceId
         .map(|(i, _)| i.id)
         .collect();
     Ok((rep, pl2))
+}
+
+/// Weight factor that holds the dragged part at its new placement during the drag step.
+const DRAG_HOLD: f64 = 1.0e9;
+
+/// Position lerp and quaternion slerp between two placements (`runDragStep`'s retries).
+fn interpolate(a: &Frame, b: &Frame, f: f64) -> Frame {
+    let pos = [0, 1, 2].map(|k| a.pos[k] * (1.0 - f) + b.pos[k] * f);
+    let (qa, mut qb) = (a.rot, b.rot);
+    let mut c: f64 = (0..4).map(|k| qa[k] * qb[k]).sum();
+    if c < 0.0 {
+        qb = qb.map(|v| -v);
+        c = -c;
+    }
+    let rot = if c >= 1.0 - 1e-15 {
+        qa
+    } else {
+        let h = c.acos();
+        let (r1, r2) = (((1.0 - f) * h).sin() / h.sin(), (f * h).sin() / h.sin());
+        [0, 1, 2, 3].map(|k| qa[k] * r1 + qb[k] * r2)
+    };
+    Frame::new(pos, rot)
 }
 
 /// World frames (I, J) of a joint at the current placements, after offsets (not sense).
