@@ -76,8 +76,8 @@ fn main() {
     }
     // Headers live in include/ (our build) or include/opencascade (some prebuilt installs).
     let include = [occt.join("include/opencascade"), occt.join("include")].into_iter().find(|p| p.join("Standard.hxx").exists()).unwrap_or_else(|| occt.join("include"));
-    let mut b = cxx_build::bridges(["src/ffi.rs", "src/asm.rs"]);
-    b.file("cpp/shim.cpp").file("cpp/asm.cpp").include(&include).include("cpp").std("c++17");
+    let mut b = cxx_build::bridges(["src/ffi.rs", "src/asm.rs", "src/fem.rs"]);
+    b.file("cpp/shim.cpp").file("cpp/asm.cpp").file("cpp/fem.cpp").include(&include).include("cpp").std("c++17");
     if msvc {
         // OCCT is linked statically: without this its headers declare everything __declspec(dllimport).
         b.define("OCCT_STATIC_BUILD", None).define("_USE_MATH_DEFINES", None).define("NOMINMAX", None).flag("/bigobj");
@@ -91,4 +91,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/asm.rs");
     println!("cargo:rerun-if-changed=cpp/asm.cpp");
     println!("cargo:rerun-if-changed=cpp/asm.h");
+    println!("cargo:rerun-if-changed=src/fem.rs");
+    println!("cargo:rerun-if-changed=cpp/fem.cpp");
+    println!("cargo:rerun-if-changed=cpp/fem.h");
 }

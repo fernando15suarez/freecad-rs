@@ -4,9 +4,11 @@
 
 pub mod asm;
 pub mod ffi;
+pub mod fem;
 
 use cxx::UniquePtr;
 pub use asm::{AsmComp, AsmNode, Distance, Label, Matrix34, StepSchema, XdeDoc};
+pub use fem::Fragments;
 pub use ffi::ffi::{EdgeInfo, FaceInfo, MeshData};
 use ffi::ffi as sys;
 use std::fmt;
