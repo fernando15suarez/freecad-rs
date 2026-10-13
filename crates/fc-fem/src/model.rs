@@ -149,6 +149,10 @@ pub struct MeshSettings {
     pub threads: u32,
     /// Geometry.Tolerance (FreeCAD GeometryTolerance, default 1e-6).
     pub geometry_tolerance: f64,
+    /// `Coherence Mesh` (FreeCAD CoherenceMesh, default true): merge duplicate mesh nodes.
+    /// Separate parts joined by ties or contact are meshed without it, so nodes of touching
+    /// faces stay distinct.
+    pub coherence: bool,
 }
 
 impl Default for MeshSettings {
@@ -166,6 +170,7 @@ impl Default for MeshSettings {
             second_order_linear: false,
             threads: 1,
             geometry_tolerance: 1e-6,
+            coherence: true,
         }
     }
 }
@@ -281,6 +286,8 @@ pub struct SolverSettings {
     pub matrix_solver: Option<String>,
     /// Threads for ccx (OMP_NUM_THREADS / CCX_NPROC_EQUATION_SOLVER); 0 = ccx default.
     pub threads: u32,
+    /// Geometrical nonlinearity (FreeCAD GeometricalNonlinearity = "nonlinear": `*STEP, NLGEOM`).
+    pub nonlinear_geometry: bool,
 }
 
 impl Default for SolverSettings {
@@ -293,6 +300,7 @@ impl Default for SolverSettings {
             time_maximum_increment: 1.0,
             matrix_solver: None,
             threads: 0,
+            nonlinear_geometry: false,
         }
     }
 }
@@ -314,6 +322,14 @@ pub struct Analysis {
     pub constraints: Vec<Constraint>,
     #[serde(default)]
     pub solver: SolverSettings,
+    /// Surface interactions between faces: ties (bonded) and contact (FreeCAD ConstraintTie /
+    /// ConstraintContact).
+    #[serde(default)]
+    pub interactions: Vec<Interaction>,
+    /// The parts of a multi-solid (assembly) analysis and the solids / faces of the analysed
+    /// shape they became (see [`crate::assembly`]). Empty for a single part.
+    #[serde(default)]
+    pub parts: Vec<PartMap>,
 }
 
 impl Analysis {
@@ -328,7 +344,44 @@ impl Analysis {
             mesh: MeshSettings::default(),
             constraints: Vec::new(),
             solver: SolverSettings::default(),
+            interactions: Vec::new(),
+            parts: Vec::new(),
         }
+    }
+
+    /// Add a surface interaction named like FreeCAD would (ConstraintTie, ConstraintTie001, ...).
+    /// `slave` faces are FreeCAD's first references (dependent surface), `master` its last
+    /// reference (independent surface).
+    pub fn add_interaction(&mut self, kind: InteractionKind, slave: Vec<SubRef>, master: Vec<SubRef>) -> &mut Interaction {
+        let base = kind.default_name();
+        let mut name = base.to_string();
+        let mut n = 0;
+        while self.interactions.iter().any(|c| c.name == name) {
+            n += 1;
+            name = format!("{base}{n:03}");
+        }
+        self.interactions.push(Interaction { name, slave, master, kind });
+        self.interactions.last_mut().unwrap()
+    }
+    /// Bond `slave` to `master` (CalculiX `*TIE`). `tolerance` (mm) is the largest gap that is
+    /// still tied.
+    pub fn tie(&mut self, slave: Vec<SubRef>, master: Vec<SubRef>, tolerance: f64) -> &mut Self {
+        self.add_interaction(InteractionKind::Tie { tolerance, adjust: false }, slave, master);
+        self
+    }
+    /// Penalty contact between `slave` and `master` (CalculiX `*CONTACT PAIR`, surface to
+    /// surface) with a linear pressure-overclosure `slope` in MPa/mm and optional friction.
+    pub fn contact(&mut self, slave: Vec<SubRef>, master: Vec<SubRef>, slope: f64, friction: Option<Friction>) -> &mut Self {
+        self.add_interaction(InteractionKind::Contact { behavior: ContactBehavior::Linear, slope, adjust: 0.0, friction }, slave, master);
+        self
+    }
+    /// Index of the part that owns `Solid<solid>` (multi-solid analyses).
+    pub fn part_of_solid(&self, solid: usize) -> Option<usize> {
+        self.parts.iter().position(|p| p.solids.contains(&solid))
+    }
+    /// Part by name.
+    pub fn part(&self, name: &str) -> Option<&PartMap> {
+        self.parts.iter().find(|p| p.name == name)
     }
 
     /// Add a constraint named like FreeCAD would (ConstraintFixed, ConstraintFixed001, ...).
@@ -367,6 +420,84 @@ impl Analysis {
     }
     pub fn from_json(s: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(s)
+    }
+}
+
+/// Pressure-overclosure law of a contact (FreeCAD ConstraintContact SurfaceBehavior).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContactBehavior {
+    /// Hard contact (Lagrange-like, no slope).
+    Hard,
+    /// Linear penalty with the given slope (FreeCAD default).
+    Linear,
+    /// Tied contact with the given slope.
+    Tied,
+}
+
+/// Coulomb friction of a contact (FreeCAD Friction / FrictionCoefficient / StickSlope).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Friction {
+    pub coefficient: f64,
+    /// Stick slope in MPa/mm (FreeCAD default: slope / 10).
+    pub stick_slope: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum InteractionKind {
+    /// Bonded faces (FreeCAD ConstraintTie): `*TIE, POSITION TOLERANCE=..`; `adjust` moves the
+    /// slave nodes onto the master surface.
+    Tie { tolerance: f64, adjust: bool },
+    /// Surface-to-surface penalty contact (FreeCAD ConstraintContact). `slope` in MPa/mm,
+    /// `adjust` (mm, 0 = off) closes initial gaps up to that size.
+    Contact { behavior: ContactBehavior, slope: f64, adjust: f64, friction: Option<Friction> },
+}
+
+impl InteractionKind {
+    /// FreeCAD's default object name prefix.
+    pub fn default_name(&self) -> &'static str {
+        match self {
+            InteractionKind::Tie { .. } => "ConstraintTie",
+            InteractionKind::Contact { .. } => "ConstraintContact",
+        }
+    }
+}
+
+/// A tie or contact between two face sets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Interaction {
+    /// Object name; CalculiX surfaces are named `TIE_DEP<name>` / `TIE_IND<name>` (tie) and
+    /// `DEP<name>` / `IND<name>` (contact), as FreeCAD writes them.
+    pub name: String,
+    /// Dependent (slave) faces.
+    pub slave: Vec<SubRef>,
+    /// Independent (master) faces.
+    pub master: Vec<SubRef>,
+    pub kind: InteractionKind,
+}
+
+/// One part of a multi-solid analysis: which solids and faces of the analysed shape it became.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PartMap {
+    pub name: String,
+    /// `Solid<n>` indices of the analysed shape.
+    pub solids: Vec<usize>,
+    /// (face index in the part's own shape, `Face<n>` index in the analysed shape). A part face
+    /// split by BooleanFragments appears several times.
+    #[serde(default)]
+    pub faces: Vec<(usize, usize)>,
+}
+
+impl PartMap {
+    /// Faces of the analysed shape that came from the part's own `Face<local>`.
+    pub fn faces_of(&self, local: usize) -> Vec<usize> {
+        self.faces.iter().filter(|f| f.0 == local).map(|f| f.1).collect()
+    }
+    /// All faces of the analysed shape that belong to this part.
+    pub fn all_faces(&self) -> Vec<usize> {
+        let mut v: Vec<usize> = self.faces.iter().map(|f| f.1).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
     }
 }
 

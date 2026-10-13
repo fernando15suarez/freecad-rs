@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 
 use crate::fmt::{fmt_g, g13, py};
 use crate::mesh::FemMesh;
-use crate::model::{Analysis, AnalysisType, ConstraintKind, HeatFluxKind};
+use crate::model::{Analysis, AnalysisType, ConstraintKind, ContactBehavior, HeatFluxKind, InteractionKind};
 use crate::resolve::{ConstraintData, Resolved};
 
 const STARS: &str = "***********************************************************";
@@ -180,6 +180,36 @@ pub fn write_inp(a: &Analysis, mesh: &FemMesh, r: &Resolved, opts: &InpOptions) 
         }
     }
 
+    // ---- surface sets (contact, then tie, like FreeCAD's writer)
+    let contacts: Vec<usize> = (0..a.interactions.len()).filter(|&i| matches!(a.interactions[i].kind, InteractionKind::Contact { .. })).collect();
+    let ties: Vec<usize> = (0..a.interactions.len()).filter(|&i| matches!(a.interactions[i].kind, InteractionKind::Tie { .. })).collect();
+    let surfaces = |f: &mut String, i: usize, prefix: &str| {
+        let it = &a.interactions[i];
+        let faces = &r.interactions[i];
+        for (side, list) in [("DEP", &faces.slave), ("IND", &faces.master)] {
+            let _ = writeln!(f, "*SURFACE, NAME={prefix}{side}{}", it.name);
+            for (_, ef) in list {
+                for (e, fno) in ef {
+                    let _ = writeln!(f, "{e},S{fno}");
+                }
+            }
+        }
+    };
+    if !contacts.is_empty() {
+        section(&mut f, "constraints contact surface sets");
+        for &i in &contacts {
+            let _ = writeln!(f, "** {}", a.interactions[i].name);
+            surfaces(&mut f, i, "");
+        }
+    }
+    if !ties.is_empty() {
+        section(&mut f, "constraints tie surface sets");
+        for &i in &ties {
+            let _ = writeln!(f, "** {}", a.interactions[i].name);
+            surfaces(&mut f, i, "TIE_");
+        }
+    }
+
     // ---- materials
     let steady = matches!(a.analysis_type, AnalysisType::Thermomech { steady_state: true });
     let density_needed = t == Ty::Frequency || (t == Ty::Thermomech && !steady) || !selfweight.is_empty();
@@ -221,10 +251,54 @@ pub fn write_inp(a: &Analysis, mesh: &FemMesh, r: &Resolved, opts: &InpOptions) 
         let _ = writeln!(f, "*SOLID SECTION, ELSET={}, MATERIAL={}", elset_name(i), m.name);
     }
 
+    // ---- constraints independent from steps: contact and tie
+    if !contacts.is_empty() {
+        section(&mut f, "Contact Constraints");
+        for &i in &contacts {
+            let it = &a.interactions[i];
+            let _ = writeln!(f, "** {}", it.name);
+            if let InteractionKind::Contact { behavior, slope, adjust, friction } = &it.kind {
+                let adj = if *adjust > 0.0 { format!(", ADJUST={}", g13(*adjust)) } else { String::new() };
+                let n = &it.name;
+                let _ = writeln!(f, "*CONTACT PAIR, INTERACTION=INT{n}, TYPE=SURFACE TO SURFACE{adj}");
+                let _ = writeln!(f, "DEP{n}, IND{n}");
+                let _ = writeln!(f, "*SURFACE INTERACTION, NAME=INT{n}");
+                match behavior {
+                    ContactBehavior::Linear => {
+                        let _ = writeln!(f, "*SURFACE BEHAVIOR, PRESSURE-OVERCLOSURE=LINEAR\n{}", g13(*slope));
+                    }
+                    ContactBehavior::Hard => f.push_str("*SURFACE BEHAVIOR, PRESSURE-OVERCLOSURE=HARD\n"),
+                    ContactBehavior::Tied => {
+                        let _ = writeln!(f, "*SURFACE BEHAVIOR, PRESSURE-OVERCLOSURE=TIED\n{}", g13(*slope));
+                    }
+                }
+                if let Some(fr) = friction {
+                    let _ = writeln!(f, "*FRICTION\n{}, {}", g13(fr.coefficient), g13(fr.stick_slope));
+                }
+            }
+        }
+    }
+    if !ties.is_empty() {
+        section(&mut f, "Tie Constraints");
+        for &i in &ties {
+            let it = &a.interactions[i];
+            let _ = writeln!(f, "** {}", it.name);
+            if let InteractionKind::Tie { tolerance, adjust } = it.kind {
+                let n = &it.name;
+                let adj = if adjust { "" } else { ", ADJUST=NO" };
+                let _ = writeln!(f, "*TIE, POSITION TOLERANCE={}{adj}, NAME=TIE{n}", g13(tolerance));
+                let _ = writeln!(f, "TIE_DEP{n}, TIE_IND{n}");
+            }
+        }
+    }
+
     // ---- step
     section(&mut f, "At least one step is needed to run an CalculiX analysis of FreeCAD");
     let s = &a.solver;
     let mut step = String::from("*STEP");
+    if s.nonlinear_geometry && t != Ty::Frequency {
+        step.push_str(", NLGEOM");
+    }
     if t != Ty::Frequency {
         let _ = write!(step, ", INC={}", s.increments_maximum);
     }
@@ -406,7 +480,15 @@ pub fn write_inp(a: &Analysis, mesh: &FemMesh, r: &Resolved, opts: &InpOptions) 
             }
         }
     }
-    if !fixed.is_empty() || !disp.is_empty() {
+    if !contacts.is_empty() {
+        // contact forces (face-to-face penalty contact), as FreeCAD writes them
+        f.push_str("** contact forces for Constraint contact\n");
+        for &i in &contacts {
+            let n = &a.interactions[i].name;
+            let _ = writeln!(f, "*CONTACT PRINT, MASTER=IND{n}, SLAVE=DEP{n}\nCF, CFN, CFS");
+        }
+    }
+    if !fixed.is_empty() || !disp.is_empty() || !contacts.is_empty() {
         f.push('\n');
     }
     f.push_str("*OUTPUT, FREQUENCY=1");

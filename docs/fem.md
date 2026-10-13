@@ -170,6 +170,128 @@ FEM_PARITY_OUT=tools/parity/fem FEM_PARITY_WORK=/tmp/femref \
 cargo test -p fc-fem --test stages -- --ignored write_snapshot_msh
 ```
 
+## Assemblies and multi-solid analyses (`assembly.rs`)
+
+FreeCAD analyses several parts as one shape with several solids. `fc-fem` does the same two
+ways (`Joining`):
+
+* **`Joining::Fragments { fuzzy }`**: the parts go through BooleanFragments (OCCT general fuse,
+  FreeCAD's `BooleanFragments` in "Standard" mode, `fc_occt::Shape::fragments`). Touching parts
+  share the face they have in common, Gmsh meshes it once, and the mesh is conformal: the parts
+  are bonded with no constraint. This is FreeCAD's documented way to analyse assemblies and
+  multi-material bodies. A partially touching face is split, so only the touching part is shared.
+* **`Joining::Separate`**: the parts are collected in a compound and meshed separately, without
+  `Coherence Mesh` (`MeshSettings::coherence = false`, FreeCAD's `CoherenceMesh`), so touching
+  faces keep their own nodes. Join them with ties or contact.
+
+```rust
+use fc_fem::*;
+let parts = [
+    AssemblyPart::new("Lower", lower_solid, Material::aluminium_6061_t6()),
+    AssemblyPart::new("Upper", upper_solid, Material::steel_generic()),
+];
+let mut a = Analysis::from_parts(&parts, Joining::Fragments { fuzzy: 0.0 })?;
+a.fixed(a.part_face("Lower", 5)?);                        // a part's own Face5, mapped to the result
+// or, for separately meshed parts:
+let mut b = Analysis::from_parts(&parts, Joining::Separate)?;
+let pairs = detect_contacts(&b, 0.1)?;                   // touching planar / cylindrical faces
+b.tie_contacts(&pairs, 0.1);                             // *TIE per pair, slave = smaller face
+b.contact(vec![slave], vec![master], 1e6, None);         // or penalty contact (MPa/mm)
+let sol = solve(&b, &RunOptions::default())?;
+for p in part_results(&b, &sol) { /* p.max_von_mises, p.max_displacement, p.reaction, p.volume */ }
+let tri_part = assembly::triangle_parts(&b, &sol.results.surface); // part of every display triangle
+// from an fc-assembly workspace (visible leaves, posed, named "Sub.Bolt"; material from the BOM):
+let c = analysis_from_assembly(&ws, asm_id, Joining::Fragments { fuzzy: 0.0 })?;
+```
+
+* `Analysis::from_parts` builds a static analysis whose shape is the fragments (named
+  `BooleanFragments`) or the compound (named `Compound`). `Analysis::parts` holds a `PartMap`
+  for every part: the `Solid<n>` it became, and (part face, result face) pairs. Parts with equal
+  materials share one material object. With several materials, each is a FreeCAD MaterialSolid
+  on its solids (`FemMaterial`, `FemMaterial001`, ...). A volume where two parts overlap
+  (interference) becomes its own solid and is given to the first part.
+* `Analysis::interactions` holds `Interaction { name, slave, master, kind }`:
+  * `InteractionKind::Tie { tolerance, adjust }` is FreeCAD's ConstraintTie. It writes
+    `*SURFACE, NAME=TIE_DEP…/TIE_IND…` and `*TIE, POSITION TOLERANCE=…, ADJUST=NO, NAME=TIE…`.
+  * `InteractionKind::Contact { behavior: Linear | Hard | Tied, slope, adjust, friction }` is
+    FreeCAD's ConstraintContact. It writes `*CONTACT PAIR, INTERACTION=…, TYPE=SURFACE TO
+    SURFACE[, ADJUST=…]`, `*SURFACE BEHAVIOR`, optional `*FRICTION`, and FreeCAD's
+    `*CONTACT PRINT … CF, CFN, CFS` output. CalculiX solves the contact iteratively inside the
+    `*STATIC` step. `SolverSettings::nonlinear_geometry` adds `NLGEOM`.
+  * The sections are written where FreeCAD's writer puts them: surface sets after the node
+    sets, and the pair/tie cards after `*SOLID SECTION`.
+  * Ties and contacts are kept separate from `Analysis::constraints`, so `ConstraintKind` did
+    not change.
+* `detect_contacts(a, tol)` finds face pairs of different parts that touch within `tol`:
+  * planar faces with opposite normals on the same plane
+  * coaxial cylinders of equal radius (pin in hole)
+
+  The overlap area is measured by sampling the smaller face on its exact surface, projecting
+  each sample onto the other face, and keeping the samples with opposing normals. Faces shared
+  by fragments are reported with `shared = true` (already bonded).
+* `part_results` returns, per part:
+  * node and element counts and mesh volume
+  * max |u| and max von Mises (each an `Extreme`)
+  * the reactions of the constraints whose references all lie on that part
+
+  On a shared face, nodal stresses are CalculiX's average over both parts, as in FreeCAD.
+* Display: `SurfaceMesh::tri_solid` gives the solid of every boundary triangle, and
+  `Analysis::part_of_solid` or `assembly::triangle_parts` give the part.
+  `FemMesh::boundary_by_solid()` gives each solid its own closed surface. This includes the
+  shared interfaces, for showing or picking hidden or exploded parts.
+
+### Assembly parity with FreeCAD 1.1.3
+
+`tools/parity/fem/freecad_assembly_reference.py` builds three cases with FreeCAD's own pipeline
+in `freecadcmd`: Part boxes, `BooleanFragments` or `Part::Compound`, MaterialSolid per solid,
+ConstraintTie / ConstraintContact, GmshTools and ccxtools. For each case it stores the
+`.brep` and `.geo`, the results `.json` (including per-solid maxima through
+`FemMesh.getNodesBySolid`), and FreeCAD's `Mesh.inp` without the node and element lines.
+`cargo test -p fc-fem --test assembly` runs two kinds of check:
+* on FreeCAD's BREP: an identical mesh, an identical `.inp` line for line apart from the
+  footer, and identical results
+* on our own fc-occt geometry ("native"): our BooleanFragments and contact detection
+
+| case | setup | nodes ours / FC | max \|u\| mm ours / FC | max von Mises MPa ours / FC | per part max vM (ours = FC) |
+|------|-------|-----------------|------------------------|-----------------------------|-----------------------------|
+| asm_stack | 40×40×20 aluminium 6061 block under a 40×40×20 steel block, BooleanFragments, bottom fixed, 10 MPa on top, h=4 | 8597 / 8597 | 0.003683 / 0.003683 | 16.4657 / 16.4657 | Lower 16.466, Upper 13.574 |
+| asm_stack native | the same from `Analysis::from_parts` (fc-occt fragments) | 8690 / 8597 | 0.003683 / 0.003683 | 16.465 / 16.466 | Lower 16.465, Upper 13.82 |
+| asm_lap_tie | 100×40×5 plate A + 98.3×31.4×5 plate B overlapping 38.3 mm, 0.05 mm gap, compound, tie (B bottom → A top, tol 0.1), A end fixed, 2 kN on B's end, h=2.5 | 25839 / 25839 | 0.976204 / 0.976204 | 100.451 / 100.451 | A 86.136, B 100.451 |
+| asm_lap_tie native | `Joining::Separate` + `detect_contacts` + `tie_contacts` | 25666 / 25839 | 0.976099 / 0.976204 | 92.58 / 100.45 | A 84.70, B 92.58 |
+| asm_contact | 20×20×10 punch on a 40×40×10 block (0.05 mm gap closed by ADJUST=0.1), penalty contact slope 10⁶ MPa/mm, block fixed, punch top x/y held, 50 MPa on it, h=2.5 | 11807 / 11807 | 0.008453 / 0.008453 | 302.50 / 302.50 | Block 151.10, Punch 302.50 |
+| asm_contact native | `Joining::Separate` + detected pair + contact | 11953 / 11807 | 0.008355 / 0.008453 | 297.04 / 302.50 | |
+
+Further checks:
+* The asm_stack reaction is exactly 16 kN, and max |u| is within 6 % of the uniaxial estimate
+  p·(h₁/E₁ + h₂/E₂) = 0.0039 mm. The fixed base restrains lateral expansion, so the computed
+  value is lower.
+* The lap joint reaction is −2000 N, attributed to plate A.
+* The native rows mesh our own fragments or compound. The face order differs, so Gmsh produces
+  a slightly different mesh. Displacements agree within 1.2 %. The peak stress sits at the
+  singular edge where the lap ends, and it is mesh dependent.
+
+Notes on the reference cases:
+* **The tie and contact cases have a 0.05 mm gap.** FreeCAD finds the nodes of a face by a
+  geometric search, so on exactly coincident faces FreeCAD puts the element faces of both parts
+  into both tie surfaces. ccx 2.23 then loops forever in its MPC decascading ("zero coefficient
+  on the dependent side"); in our run its log reached 81 GB. FreeCAD's own tie example also has
+  a gap. fc-fem takes element faces from Gmsh's topological classification, so its sets are
+  correct for coincident faces too.
+* A tie also fails when a slave edge node lands exactly on a master node (identical edge
+  divisions). The lap plates are offset so that this cannot happen.
+* **Penalty contact without ADJUST does not converge on the gap case** ("too many cutbacks").
+* **In the converged contact run, the reaction totals are not in equilibrium with the 20 kN
+  load:** the fixed base reports 70.7 kN. FreeCAD's result is the same, so this comes from
+  CalculiX's surface-to-surface penalty contact with ADJUST, not from the input. The test
+  checks parity, and checks that the contact stress under the punch is compressive.
+
+Regenerate with:
+
+```
+FEM_PARITY_OUT=tools/parity/fem FEM_PARITY_WORK=/tmp/femref \
+  /Applications/FreeCAD.app/Contents/Resources/bin/freecadcmd tools/parity/fem/freecad_assembly_reference.py
+```
+
 ## Tests
 
 `OCCT_DIR=… CARGO_TARGET_DIR=target-fem cargo test -p fc-fem` runs the following. Solver
@@ -187,6 +309,10 @@ tests print `SKIP` and pass when gmsh or ccx is missing.
   * analysis JSON round trip
 * `snapshot`: geo and inp parity with FreeCAD.
 * `parity`: the end-to-end table above, plus the theory checks.
+* `assembly`:
+  * tool-free: fragments, part and material mapping, contact detection (lap joint and pin in
+    hole), the fc-assembly workspace glue, and the JSON round trip with interactions
+  * with the tools: the three parity cases above, exact and native
 * `tools_env`: a clear error when the tools are missing.
 * `bracket_step`: the fc-part bracket is a valid solid.
 
@@ -194,7 +320,14 @@ tests print `SKIP` and pass when gmsh or ccx is missing.
 
 * Only solid tetrahedral meshes are supported: no shells or beams, and no hexahedra or
   recombination. Boundary layers and the Netgen mesher are not supported either.
-* Constraints that are not implemented: contact, tie, transform, plane rotation, rigid body,
+* Some assembly features are not supported:
+  * tie cyclic symmetry
+  * contact thermal conductance (`*GAP CONDUCTANCE`)
+  * reversed slave/master normals, which FreeCAD uses for shell meshes only
+  * per-part reactions of a constraint that spans several parts (no extra node print is
+    written; the total is reported per constraint)
+  * contact detection between faces other than planes and cylinders
+* Constraints that are not implemented: transform, plane rotation, rigid body,
   spring, centrifugal and body heat source. Amplitudes, buckling, electromagnetic and nonlinear
   material or geometry are not implemented either. Time-dependent thermomechanical runs write
   the same step as FreeCAD but are not parity-tested.

@@ -1,0 +1,54 @@
+{
+  "case": "asm_contact",
+  "contact_adjust": 0.1,
+  "contact_master": [
+    "Face6"
+  ],
+  "contact_slave": [
+    "Face11"
+  ],
+  "contact_slope": 1000000.0,
+  "fixed": [
+    "Face5"
+  ],
+  "freecad_version": "1.1.3",
+  "max_disp": 0.00845296,
+  "max_disp_node": 5132,
+  "max_von_mises": 302.50245902751385,
+  "max_von_mises_node": 330,
+  "mesh": {
+    "coherence": false,
+    "max": 2.5,
+    "order": 2
+  },
+  "nodes": 11807,
+  "pressure": 50.0,
+  "reactions": {
+    "CONSTRAINTDISPLACEMENT": [
+      -2.291778e-13,
+      -6.243894e-13,
+      -20000.0
+    ],
+    "CONSTRAINTFIXED": [
+      7.247536e-13,
+      1.281641e-12,
+      70678.71
+    ]
+  },
+  "solids": [
+    {
+      "max_disp": 0.006180062372127868,
+      "max_von_mises": 151.09706529966854,
+      "nodes": 9122
+    },
+    {
+      "max_disp": 0.00845296,
+      "max_von_mises": 302.50245902751385,
+      "nodes": 2685
+    }
+  ],
+  "top": [
+    "Face12"
+  ],
+  "volume_elements": 6755
+}

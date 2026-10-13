@@ -28,6 +28,16 @@ pub struct Resolved {
     pub data: Vec<ConstraintData>,
     /// Elements per material assignment (empty = all elements).
     pub material_elements: Vec<Vec<u32>>,
+    /// Element faces of every interaction (in the order of `Analysis::interactions`).
+    pub interactions: Vec<InteractionFaces>,
+}
+
+/// Element faces of the slave and master side of a tie / contact.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct InteractionFaces {
+    /// (label "Face3", element faces) per referenced slave face.
+    pub slave: Vec<(String, Vec<ElementFace>)>,
+    pub master: Vec<(String, Vec<ElementFace>)>,
 }
 
 /// Exact B-rep face areas by 1-based face index, when the shape is known (FreeCAD divides the
@@ -112,7 +122,25 @@ pub fn resolve(analysis: &Analysis, mesh: &FemMesh, face_areas: Option<&FaceArea
     } else {
         material_elements.push(Vec::new());
     }
-    Ok(Resolved { data, material_elements })
+    let mut interactions = Vec::new();
+    for it in &analysis.interactions {
+        let side = |refs: &[SubRef], what: &str| -> Result<Vec<(String, Vec<ElementFace>)>, FemError> {
+            if refs.is_empty() {
+                return Err(FemError::Reference(format!("{} has no {what} faces", it.name)));
+            }
+            let mut v = Vec::new();
+            for r in refs {
+                if r.kind != SubKind::Face {
+                    return Err(FemError::Reference(format!("{}: {} is not a face", it.name, r.name())));
+                }
+                let t = mesh.resolve(r)?;
+                v.push((format!("Face{t}"), mesh.element_faces_on(t, &lookup)));
+            }
+            Ok(v)
+        };
+        interactions.push(InteractionFaces { slave: side(&it.slave, "slave")?, master: side(&it.master, "master")? });
+    }
+    Ok(Resolved { data, material_elements, interactions })
 }
 
 #[allow(clippy::too_many_arguments)]

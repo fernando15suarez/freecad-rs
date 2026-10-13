@@ -17,6 +17,7 @@
 //!
 //! Tool lookup: `FCRS_GMSH` / `FCRS_CCX`, then `PATH`, then FreeCAD.app's bundled binaries.
 
+pub mod assembly;
 pub mod fmt;
 pub mod frd;
 pub mod inp;
@@ -28,17 +29,18 @@ pub mod results;
 pub mod solve;
 pub mod tools;
 
+pub use assembly::{analysis_from_assembly, assembly_parts, detect_contacts, part_results, AssemblyPart, ContactKind, ContactPair, Joining, PartResult};
 pub use frd::{parse_dat_frequencies, parse_dat_totals, parse_frd, Frd, FrdBlock};
 pub use inp::{write_inp, InpOptions};
 pub use material::Material;
 pub use mesh::{parse_msh, write_geo, FemMesh, SurfaceMesh, VolumeElement};
 pub use model::{
-    Analysis, AnalysisType, Constraint, ConstraintKind, ForceDirection, HeatFluxKind, MaterialAssignment, MeshRefinement, MeshSettings,
-    ShapeSource, Signature, SolverSettings, SubKind, SubRef, STANDARD_GRAVITY,
+    Analysis, AnalysisType, Constraint, ConstraintKind, ContactBehavior, ForceDirection, Friction, HeatFluxKind, Interaction, InteractionKind, MaterialAssignment,
+    MeshRefinement, MeshSettings, PartMap, ShapeSource, Signature, SolverSettings, SubKind, SubRef, STANDARD_GRAVITY,
 };
-pub use resolve::{resolve, ConstraintData, Resolved};
+pub use resolve::{resolve, ConstraintData, InteractionFaces, Resolved};
 pub use results::{Extreme, Field, Mode, Results};
-pub use solve::{mesh_analysis, prepare_geometry, read_results, run_ccx, solve, write_input, RunOptions, Solution, JOB_NAME};
+pub use solve::{mesh_analysis, prepare_geometry, read_results, run_ccx, run_ccx_streaming, solve, write_input, RunOptions, Solution, JOB_NAME};
 
 /// Errors of the FEM pipeline.
 #[derive(Debug, thiserror::Error)]
@@ -57,6 +59,8 @@ pub enum FemError {
     Model(String),
     #[error("results: {0}")]
     Results(String),
+    #[error("cancelled")]
+    Cancelled,
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

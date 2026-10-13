@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::frd::{parse_dat_frequencies, parse_dat_totals, parse_frd};
 use crate::inp::{write_inp, InpOptions};
@@ -97,19 +97,64 @@ pub fn write_input(a: &Analysis, mesh: &FemMesh, areas: Option<&FaceAreas>, dir:
 
 /// Run `ccx -i Mesh` in `dir` (as FreeCAD's ccxtools does) and return its output.
 pub fn run_ccx(dir: &Path, threads: u32) -> Result<String, FemError> {
+    run_ccx_streaming(dir, threads, &mut |_| {}, &AtomicBool::new(false))
+}
+
+/// [`run_ccx`] that hands every output line to `on_line` while ccx runs (for a live log) and
+/// kills ccx when `cancel` becomes true (then fails with [`FemError::Cancelled`]).
+pub fn run_ccx_streaming(dir: &Path, threads: u32, on_line: &mut dyn FnMut(&str), cancel: &AtomicBool) -> Result<String, FemError> {
+    use std::io::{BufRead, BufReader, Read};
+    use std::process::Stdio;
     let ccx = crate::tools::ccx()?;
     for ext in ["frd", "dat", "sta", "cvg"] {
         let _ = std::fs::remove_file(dir.join(format!("{JOB_NAME}.{ext}")));
     }
     let mut cmd = Command::new(&ccx);
-    cmd.arg("-i").arg(JOB_NAME).current_dir(dir);
+    cmd.arg("-i").arg(JOB_NAME).current_dir(dir).stdout(Stdio::piped()).stderr(Stdio::piped());
     let n = if threads > 0 { threads as usize } else { std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) };
     cmd.env("OMP_NUM_THREADS", n.to_string());
     cmd.env("CCX_NPROC_EQUATION_SOLVER", n.to_string());
-    let out = cmd.output().map_err(|e| FemError::ToolFailed { tool: "ccx", detail: format!("could not start {}: {e}", ccx.display()) })?;
-    let log = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    let mut child = cmd.spawn().map_err(|e| FemError::ToolFailed { tool: "ccx", detail: format!("could not start {}: {e}", ccx.display()) })?;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = stderr.read_to_string(&mut s);
+        s
+    });
+    let mut log = String::new();
+    let mut cancelled = false;
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok(line) => {
+                on_line(&line);
+                log.push_str(&line);
+                log.push('\n');
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+        if !cancelled && cancel.load(Ordering::Relaxed) {
+            cancelled = true;
+            let _ = child.kill();
+        }
+    }
+    let _ = reader.join();
+    let status = child.wait()?;
+    log.push_str(&err_reader.join().unwrap_or_default());
+    if cancelled {
+        return Err(FemError::Cancelled);
+    }
     let errors: Vec<&str> = log.lines().filter(|l| l.contains("*ERROR")).collect();
-    if !errors.is_empty() || !out.status.success() || !dir.join(format!("{JOB_NAME}.frd")).exists() {
+    if !errors.is_empty() || !status.success() || !dir.join(format!("{JOB_NAME}.frd")).exists() {
         let detail = if errors.is_empty() { log.lines().rev().take(15).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n") } else { errors.join("\n") };
         return Err(FemError::ToolFailed { tool: "ccx", detail });
     }

@@ -262,13 +262,26 @@ impl FemMesh {
 
     /// Outer (boundary) faces of the volume mesh as display triangles. Quadratic faces are split
     /// into 4 triangles through their midside nodes so per-node results can be shown.
+    /// Faces shared by two solids of a conformal multi-solid mesh are inside and not included.
     pub fn boundary(&self) -> SurfaceMesh {
-        let mut count: HashMap<[u32; 3], (u32, usize, usize)> = HashMap::new();
+        self.boundary_impl(false)
+    }
+
+    /// Like [`FemMesh::boundary`], but every solid gets its own closed surface: a face shared by
+    /// two solids (BooleanFragments) appears once for each, facing out of that solid. For
+    /// showing or picking the parts of an assembly separately (e.g. exploded or hidden parts).
+    pub fn boundary_by_solid(&self) -> SurfaceMesh {
+        self.boundary_impl(true)
+    }
+
+    fn boundary_impl(&self, per_solid: bool) -> SurfaceMesh {
+        let mut count: HashMap<(usize, [u32; 3]), (u32, usize, usize)> = HashMap::new();
         for (ei, e) in self.elements.iter().enumerate() {
             for (fi, f) in TET_FACES.iter().enumerate() {
                 let mut k = [e.nodes[f[0]], e.nodes[f[1]], e.nodes[f[2]]];
                 k.sort_unstable();
-                count.entry(k).and_modify(|v| v.0 += 1).or_insert((1, ei, fi));
+                let key = (if per_solid { e.solid } else { 0 }, k);
+                count.entry(key).and_modify(|v| v.0 += 1).or_insert((1, ei, fi));
             }
         }
         // B-rep face tag for each boundary triangle (from the classified surface triangles).
@@ -280,10 +293,10 @@ impl FemMesh {
                 face_of.insert(k, tag as u32);
             }
         }
-        let mut keys: Vec<_> = count.iter().filter(|(_, v)| v.0 == 1).map(|(k, v)| (*k, v.1, v.2)).collect();
+        let mut keys: Vec<_> = count.iter().filter(|(_, v)| v.0 == 1).map(|(k, v)| (k.1, k.0, v.1, v.2)).collect();
         keys.sort_unstable();
         let mut s = SurfaceMesh::default();
-        for (k, ei, fi) in keys {
+        for (k, _, ei, fi) in keys {
             let e = &self.elements[ei];
             let c = TET_FACES[fi];
             // ccx face corner order 1-2-3 / 1-4-2 / ... points into the element; flip for outward.
@@ -298,10 +311,12 @@ impl FemMesh {
                 for t in [[a, ab, ca], [ab, b, bc], [ca, bc, cc], [ab, bc, ca]] {
                     s.triangles.push(t.map(idx));
                     s.tri_face.push(tag);
+                    s.tri_solid.push(e.solid as u32);
                 }
             } else {
                 s.triangles.push(corners.map(idx));
                 s.tri_face.push(tag);
+                s.tri_solid.push(e.solid as u32);
             }
         }
         s
@@ -315,6 +330,9 @@ pub struct SurfaceMesh {
     pub triangles: Vec<[u32; 3]>,
     /// B-rep face index (FreeCAD `Face<n>`) of each triangle, 0 if unknown.
     pub tri_face: Vec<u32>,
+    /// Solid (FreeCAD `Solid<n>`, Gmsh volume tag) of the element each triangle belongs to;
+    /// map it to a part with `Analysis::part_of_solid` for per-part colours and picking.
+    pub tri_solid: Vec<u32>,
 }
 
 /// Split a tri3/tri6 into straight sub-triangles (tri6 order: c0 c1 c2 m01 m12 m20).
@@ -530,12 +548,16 @@ pub fn write_geo(settings: &MeshSettings, brep_file: &str, mesh_file: &str, refs
     g.push_str("// subdivision algorithm\nMesh.SubdivisionAlgorithm = 0;\n\n");
     g.push_str("// incomplete second order elements\nMesh.SecondOrderIncomplete = 0;\n\n");
     g.push_str("// meshing\n");
-    let _ = writeln!(
-        g,
-        "Geometry.Tolerance = {}; // set geometrical tolerance (also used for merging nodes)",
-        crate::fmt::py(settings.geometry_tolerance)
-    );
-    g.push_str("Mesh  3;\nCoherence Mesh; // Remove duplicate vertices\n\n");
+    if settings.coherence {
+        let _ = writeln!(
+            g,
+            "Geometry.Tolerance = {}; // set geometrical tolerance (also used for merging nodes)",
+            crate::fmt::py(settings.geometry_tolerance)
+        );
+        g.push_str("Mesh  3;\nCoherence Mesh; // Remove duplicate vertices\n\n");
+    } else {
+        g.push_str("Mesh  3;\n\n");
+    }
     g.push_str("// save\n");
     g.push_str("// Ignore Physical definitions and save all elements;\nMesh.SaveAll = 1;\n");
     g.push_str("Mesh.MshFileVersion = 4.1;\nMesh.Binary = 0;\n");

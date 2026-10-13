@@ -7,6 +7,7 @@ description = "FEM (structural/modal/thermomechanical) analysis like FreeCAD's F
 
 [dependencies]
 fc-occt = { path = "../fc-occt" }
+fc-assembly = { path = "../fc-assembly" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
