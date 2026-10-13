@@ -1696,6 +1696,10 @@ impl App {
             }
         }
         self.exploded_tree_rows(ui, a, depth + 1, interactive);
+        if active {
+            // FEM analyses of this assembly
+            self.fem_tree(ui, interactive);
+        }
         if let Some((s, double)) = act {
             let multi = ui.input(|i| i.modifiers.command || i.modifiers.ctrl);
             if double {

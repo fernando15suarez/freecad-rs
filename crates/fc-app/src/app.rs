@@ -10,6 +10,7 @@ mod asm_tools;
 mod assembly;
 mod chrome;
 mod fem;
+mod fem_asm_ui;
 mod fem_ui;
 mod mates;
 mod tasks;
@@ -338,7 +339,11 @@ impl App {
 
     fn rebuild_scene(&mut self) {
         if self.active_assembly().is_some() {
-            self.rebuild_asm_scene();
+            if self.fem_on_assembly() && self.fem_cur().is_some() {
+                self.rebuild_fem_asm_scene();
+            } else {
+                self.rebuild_asm_scene();
+            }
             return;
         }
         let mut objs = if !self.body_visible {
@@ -1525,6 +1530,22 @@ impl App {
                     "fem_error" => self.fem_cur().map(|a| self.fem.docs[a].rt.error.clone().unwrap_or_default()).map(|e| if !val.is_empty() && e.contains(val.as_str()) { val.clone() } else { e }),
                     "fem_task" => Some(self.fem.task.is_some().to_string()),
                     "fem_on" => Some(self.fem.on.to_string()),
+                "fem_parts" => self.fem_cur().map(|a| self.fem.docs[a].analysis.parts.len().to_string()),
+                "fem_interactions" => self.fem_cur().map(|a| self.fem.docs[a].analysis.interactions.len().to_string()),
+                "fem_contacts" => match &self.fem.task {
+                    Some(fem::FemTask::AsmSetup { contacts: Some(Ok(c)), .. }) => Some(c.len().to_string()),
+                    _ => None,
+                },
+                "fem_hover" => Some(self.fem.hover_text.clone().unwrap_or_default()).map(|t| if t.contains(val.as_str()) { val.clone() } else { t }),
+                "fem_part_max" => {
+                    // PART MAXDISP (within 1 %)
+                    let (n, want) = val.rsplit_once(' ').unwrap_or((&val, ""));
+                    self.fem_cur().and_then(|a| self.fem.docs[a].rt.part_results.clone()).and_then(|v| v.into_iter().find(|p| p.name == n)).map(|p| {
+                        let got = p.max_displacement.map(|e| e.value);
+                        let ok = got.zip(want.parse::<f64>().ok()).is_some_and(|(a, b)| (a - b).abs() <= 0.01 * b.abs());
+                        if ok { val.clone() } else { format!("{got:?}") }
+                    })
+                }
                     "editing" => Some(self.editor.is_some().to_string()),
                     "task" => Some(self.task.is_some().to_string()),
                     "picking" => Some(self.picking.to_string()),
@@ -1739,6 +1760,13 @@ impl App {
 impl App {
     /// Mouse interaction with the 3D view for the current mode.
     fn view_input(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, r: &crate::viewport::ViewportResponse) {
+        if self.fem_on_assembly() {
+            // FEM on an assembly: constraint picking, result read-out
+            if !self.fem_view_input(ui, ctx, r) && r.response.clicked() {
+                self.view_clicked(ctx, r.clicked.clone());
+            }
+            return;
+        }
         if self.active_assembly().is_some() {
             self.asm_view_input(ui, ctx, r);
             return;
@@ -1809,11 +1837,11 @@ impl eframe::App for App {
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
             egui::Panel::bottom("doc_tabs").exact_size(28.0).frame(egui::Frame::new().fill(crate::theme::WINDOW)).show(ui, |ui| self.doc_tabs(ui));
             self.vp.right_inset = if task_open { tasks::TASK_W } else { 0.0 };
-            if self.active_assembly().is_some() {
+            if self.active_assembly().is_some() && !self.fem_on_assembly() {
                 self.asm_pre_view(ctx);
             }
             // a connector triad under the cursor takes the hover from the geometry behind it
-            self.vp.suppress_hover = ctx.input(|i| i.pointer.hover_pos()).is_some_and(|p| self.triad_under(p));
+            self.vp.suppress_hover = !self.fem_on_assembly() && ctx.input(|i| i.pointer.hover_pos()).is_some_and(|p| self.triad_under(p));
             let r = self.vp.ui(ui);
             self.view_rect = r.response.rect;
             self.hovered = r.hovered.clone();

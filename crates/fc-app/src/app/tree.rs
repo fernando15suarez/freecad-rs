@@ -197,11 +197,11 @@ impl App {
                             ui.label(RichText::new("Editing in the Tasks panel").color(Color32::from_gray(170)).font(theme::bold_font(13.0)));
                         });
                     }
-                    _ if self.active_assembly().is_some() => self.asm_data_tab(ui),
-                    _ if self.fem.sel.is_some() && self.tree_sel.is_empty() => {
+                    _ if self.fem.sel.is_some() && self.tree_sel.is_empty() && (self.fem.on || self.active_assembly().is_none()) => {
                         let it = self.fem.sel.unwrap();
                         self.fem_data_tab(ui, it)
                     }
+                    _ if self.active_assembly().is_some() => self.asm_data_tab(ui),
                     _ => self.data_tab(ui),
                 }
             });

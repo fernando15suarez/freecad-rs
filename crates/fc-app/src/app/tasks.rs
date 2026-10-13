@@ -259,6 +259,10 @@ impl App {
             widgets::dock_title(ui, "Tasks");
             if self.editor.is_some() {
                 self.sketch_task(ui);
+            } else if self.fem.task.is_some() && self.fem.on {
+                self.fem_task_panel(ui);
+            } else if self.fem_on_assembly() {
+                self.fem_asm_overview(ui);
             } else if self.active_assembly().is_some() {
                 self.asm_task_panel(ui);
             } else if self.picking {

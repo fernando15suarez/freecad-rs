@@ -1,0 +1,132 @@
+# Assembly FEA: two bonded blocks (fc-fem's asm_stack: aluminium Lower under steel Upper, 40 x
+# 40 x 20 each), FEM workbench on the assembly, BooleanFragments, contact detection finds the
+# shared face, bottom fixed, 10 MPa on top, 4 mm tets. fc-fem's values for identical settings
+# (`fem_reference_asm_stack`): max |u| 0.003683 mm, Lower 0.002640, Upper 0.003683.
+wait 5
+asmtest stack
+wait 5
+at ui workbench
+click
+wait 3
+at ui wb:FEM
+click
+wait 4
+expect fem_on true
+expect tab assembly Stack
+at ui tb:fem_analysis
+click
+wait 5
+expect fem_analyses 1
+expect fem_task true
+expect fem_parts 2
+at ui fem:detect
+click
+wait 4
+expect fem_contacts 1
+shot OUT/fem_asm_setup.png
+at ui task:ok
+click
+wait 3
+# Fixed on the bottom of Lower
+at ui tb:fem_fixed
+click
+wait 3
+key 5
+wait 3
+at world 20 20 0
+click
+wait 3
+key 0
+wait 3
+expect fem_refs Face5
+at ui task:ok
+click
+wait 3
+# 10 MPa on the top of Upper
+at ui tb:fem_pressure
+click
+wait 3
+at world 20 20 40
+click
+wait 3
+expect fem_refs Face11
+at ui fem:pressure
+click
+key A cmd
+type 10 MPa
+key Enter
+wait 2
+at ui task:ok
+click
+wait 3
+shot OUT/fem_asm_constraints.png
+at ui tb:fem_mesh
+click
+wait 3
+at ui fem:max_size
+click
+key A cmd
+type 4
+key Enter
+wait 2
+at ui task:ok
+click
+wait 2
+femwait 3000
+wait 3
+expect fem_mesh true
+at ui tb:fem_run
+click
+wait 3
+femwait 6000
+wait 5
+expect fem_result true
+expect fem_maxdisp 0.003683
+expect fem_part_max Lower 0.002640
+expect fem_part_max Upper 0.003683
+at ui combo:fem_field
+click
+wait 3
+at ui opt:fem_field:Displacement Magnitude
+click
+wait 3
+at world 30 30 40
+wait 4
+expect fem_hover Upper
+shot OUT/fem_asm_results.png
+at ui task:close
+click
+wait 3
+# the same parts meshed separately and tied (CalculiX *TIE) on the detected faces
+at ui taskact:fem_setup
+click
+wait 4
+expect fem_task true
+at ui fem:join:separate
+click
+wait 5
+at ui fem:detect
+click
+wait 4
+expect fem_contacts 1
+at ui fem:tie:0
+click
+wait 3
+expect fem_interactions 1
+shot OUT/fem_asm_tie.png
+at ui task:ok
+click
+wait 3
+at ui tb:fem_run
+click
+wait 3
+femwait 6000
+wait 5
+expect fem_result true
+expect fem_error 
+expect fem_maxdisp 0.003683
+shot OUT/fem_asm_tie_results.png
+at ui task:close
+click
+wait 3
+quit

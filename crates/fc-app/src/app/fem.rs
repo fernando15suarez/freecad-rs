@@ -24,8 +24,21 @@ pub struct FemDoc {
     /// A FEMMeshGmsh object exists.
     #[serde(default)]
     pub mesh: bool,
+    /// An analysis of an assembly (`part` is then the assembly's name): how its parts are
+    /// joined and their materials. The analysed shape is rebuilt from the assembly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asm: Option<AsmFem>,
     #[serde(skip)]
     pub rt: FemRt,
+}
+
+/// Settings of an assembly analysis (FreeCAD: BooleanFragments or a compound of the parts,
+/// a MaterialSolid per part).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AsmFem {
+    pub joining: fc_fem::Joining,
+    /// Material per part (instance path name, "Sub.Bolt").
+    pub materials: Vec<(String, Material)>,
 }
 
 fn yes() -> bool {
@@ -47,6 +60,10 @@ pub struct FemRt {
     pub elapsed: f64,
     /// Mesh settings of `mesh` (a change asks for a new mesh).
     pub meshed_with: Option<fc_fem::MeshSettings>,
+    /// Assembly analyses: the analysed shape (BooleanFragments or compound of the parts).
+    pub shape: Option<fc_occt::Shape>,
+    /// Assembly analyses: maxima per part of the last results.
+    pub part_results: Option<Vec<fc_fem::PartResult>>,
 }
 
 /// FEM toolbar commands.
@@ -140,12 +157,14 @@ pub enum FemItem {
     Constraint(usize, usize),
     Results(usize),
     ResultMesh(usize),
+    /// A tie or contact between parts (assembly analyses).
+    Interaction(usize, usize),
 }
 
 impl FemItem {
     pub fn analysis(self) -> usize {
         match self {
-            FemItem::Analysis(a) | FemItem::Solver(a) | FemItem::Material(a, _) | FemItem::Mesh(a) | FemItem::Constraint(a, _) | FemItem::Results(a) | FemItem::ResultMesh(a) => a,
+            FemItem::Analysis(a) | FemItem::Solver(a) | FemItem::Material(a, _) | FemItem::Mesh(a) | FemItem::Constraint(a, _) | FemItem::Results(a) | FemItem::ResultMesh(a) | FemItem::Interaction(a, _) => a,
         }
     }
 }
@@ -165,22 +184,24 @@ pub enum FemTask {
     Mesh { a: usize, created: bool, before: String },
     Solver { a: usize, before: String, auto: bool },
     Results { a: usize },
+    /// Assembly analysis setup: joining, materials per part, contacts.
+    AsmSetup { a: usize, created: bool, before: String, contacts: Option<Result<Vec<fc_fem::ContactPair>, String>>, tol: f64 },
 }
 
 impl FemTask {
     pub fn analysis(&self) -> usize {
         match self {
-            FemTask::Constraint { a, .. } | FemTask::Material { a, .. } | FemTask::Mesh { a, .. } | FemTask::Solver { a, .. } | FemTask::Results { a } => *a,
+            FemTask::Constraint { a, .. } | FemTask::Material { a, .. } | FemTask::Mesh { a, .. } | FemTask::Solver { a, .. } | FemTask::Results { a } | FemTask::AsmSetup { a, .. } => *a,
         }
     }
     fn before(&self) -> Option<&str> {
         match self {
-            FemTask::Constraint { before, .. } | FemTask::Material { before, .. } | FemTask::Mesh { before, .. } | FemTask::Solver { before, .. } => Some(before),
+            FemTask::Constraint { before, .. } | FemTask::Material { before, .. } | FemTask::Mesh { before, .. } | FemTask::Solver { before, .. } | FemTask::AsmSetup { before, .. } => Some(before),
             FemTask::Results { .. } => None,
         }
     }
     fn created(&self) -> bool {
-        matches!(self, FemTask::Constraint { created: true, .. } | FemTask::Material { created: true, .. } | FemTask::Mesh { created: true, .. })
+        matches!(self, FemTask::Constraint { created: true, .. } | FemTask::Material { created: true, .. } | FemTask::Mesh { created: true, .. } | FemTask::AsmSetup { created: true, .. })
     }
 }
 
@@ -420,20 +441,80 @@ fn wire_edges(tris: &[[u32; 3]], quadratic: bool, pos: &[[f64; 3]]) -> Vec<Scene
     out
 }
 
+/// Distinct light colors for the parts of an assembly analysis.
+pub fn part_color(i: usize) -> [f32; 3] {
+    const P: [[f32; 3]; 8] = [[0.62, 0.72, 0.88], [0.90, 0.72, 0.50], [0.62, 0.84, 0.62], [0.86, 0.62, 0.76], [0.85, 0.83, 0.55], [0.58, 0.82, 0.84], [0.78, 0.68, 0.90], [0.80, 0.80, 0.80]];
+    P[i % P.len()]
+}
+
 /// FreeCAD's FEM mesh color (light gray) and result object base.
 const MESH_COLOR: [f32; 4] = [0.80, 0.80, 0.80, 1.0];
 
 impl App {
     // ----------------------------------------------------------------- access
 
+    /// What the FEM workbench analyses: the open part, or the open assembly.
     pub(super) fn fem_part_name(&self) -> Option<String> {
-        self.active_part().map(|p| self.part_name(p))
+        self.active_part().map(|p| self.part_name(p)).or_else(|| self.active_assembly().and_then(|a| self.ws.assembly(a)).map(|a| a.name.clone()))
     }
 
-    /// Analyses of the open part (indices into `fem.docs`).
+    /// Analyses of the open part or assembly (indices into `fem.docs`).
     pub(super) fn fem_analyses(&self) -> Vec<usize> {
         let Some(name) = self.fem_part_name() else { return vec![] };
-        (0..self.fem.docs.len()).filter(|&i| self.fem.docs[i].part == name).collect()
+        let asm = self.active_assembly().is_some();
+        (0..self.fem.docs.len()).filter(|&i| self.fem.docs[i].part == name && self.fem.docs[i].asm.is_some() == asm).collect()
+    }
+
+    /// The FEM workbench is on an assembly.
+    pub(super) fn fem_on_assembly(&self) -> bool {
+        self.fem.on && self.active_assembly().is_some()
+    }
+
+    /// The analysed shape of the active analysis as known now (part: the body's solid;
+    /// assembly: the BooleanFragments / compound built for it).
+    pub(super) fn fem_cur_shape(&self) -> Option<&fc_occt::Shape> {
+        if self.active_assembly().is_some() {
+            self.fem_cur().and_then(|a| self.fem.docs[a].rt.shape.as_ref())
+        } else {
+            self.doc.result()
+        }
+    }
+
+    /// Material per part from the parts' data (BOM material card, else Steel-Generic).
+    fn fem_default_materials(&self, asm: fc_assembly::AssemblyId) -> Vec<(String, Material)> {
+        self.ws
+            .leaves(asm)
+            .into_iter()
+            .filter(|l| l.visible)
+            .filter_map(|l| self.ws.part(l.part).filter(|e| e.shape().is_some()).map(|e| (l.name.clone(), fc_fem::assembly::part_material(&e.meta))))
+            .collect()
+    }
+
+    /// (Re)build the analysed shape of assembly analysis `a`: BooleanFragments (bonded) or a
+    /// compound (separate), the part map and one material per distinct part material.
+    pub(super) fn fem_asm_build(&mut self, a: usize) -> Result<(), String> {
+        let Some(aid) = self.active_assembly() else { return Err("no assembly is open".into()) };
+        let Some(cfg) = self.fem.docs.get(a).and_then(|d| d.asm.clone()) else { return Ok(()) };
+        let mats: HashMap<String, Material> = cfg.materials.iter().cloned().collect();
+        let parts = fc_fem::assembly_parts(&self.ws, aid, &|leaf, e| mats.get(&leaf.name).cloned().unwrap_or_else(|| fc_fem::assembly::part_material(&e.meta))).map_err(|e| e.to_string())?;
+        let built = Analysis::from_parts(&parts, cfg.joining).map_err(|e| e.to_string())?;
+        let d = &mut self.fem.docs[a];
+        d.analysis.parts = built.parts.clone();
+        d.analysis.materials = built.materials.clone();
+        d.analysis.shape_name = built.shape_name.clone();
+        d.analysis.mesh.coherence = built.mesh.coherence;
+        d.rt.shape = built.shape_in_memory().cloned();
+        Ok(())
+    }
+
+    /// Make sure an assembly analysis has its shape (after opening a file or undo).
+    pub(super) fn fem_ensure_shape(&mut self, a: usize) {
+        if self.fem.docs.get(a).is_some_and(|d| d.asm.is_some() && d.rt.shape.is_none()) {
+            if let Err(e) = self.fem_asm_build(a) {
+                self.fem.docs[a].rt.error = Some(e.clone());
+                self.status = e;
+            }
+        }
     }
 
     /// The active analysis of the open part.
@@ -463,6 +544,10 @@ impl App {
         for d in &mut docs {
             if let Some(o) = old.iter().find(|o| o.part == d.part && o.analysis.name == d.analysis.name) {
                 d.rt = o.rt.clone();
+                if o.asm != d.asm {
+                    // other joining or materials: the analysed shape is rebuilt when needed
+                    d.rt.shape = None;
+                }
             }
         }
         self.fem.docs = docs;
@@ -507,6 +592,7 @@ impl App {
                 FemItem::Mesh(_) => d.mesh,
                 FemItem::Solver(_) => d.solver,
                 FemItem::Results(_) | FemItem::ResultMesh(_) => d.rt.results.is_some(),
+                FemItem::Interaction(_, i) => i < d.analysis.interactions.len(),
                 FemItem::Analysis(_) => true,
             }
         };
@@ -522,15 +608,18 @@ impl App {
         if !self.idle() {
             return;
         }
-        if self.active_part().is_none() {
+        // on an assembly, FEM analyses the assembly (multi-solid analysis)
+        if self.active_part().is_none() && self.active_assembly().is_none() {
             let p = self.last_part.filter(|p| self.ws.part(*p).is_some()).or(self.ws.parts.first().map(|p| p.id));
             if let Some(p) = p {
                 self.switch_tab(Tab::Part(p));
             }
         }
-        if self.active_part().is_none() {
+        if self.active_part().is_none() && self.active_assembly().is_none() {
             return;
         }
+        self.asm.explode_show = None;
+        self.asm.highlight = None;
         self.fem.on = true;
         self.tree_sel.clear();
         self.rebuild_scene();
@@ -574,13 +663,16 @@ impl App {
 
     /// (icon, title, description, enabled)
     pub(super) fn fem_cmd_info(&self, c: FemCmd) -> (&'static str, &'static str, &'static str, bool) {
-        let idle = self.idle() && self.active_part().is_some();
+        let idle = self.idle() && (self.active_part().is_some() || self.active_assembly().is_some());
         let cur = self.fem_cur();
         let has = cur.is_some() && idle;
-        let solid = self.doc.result().is_some();
+        let solid = match self.active_assembly() {
+            Some(a) => self.ws.leaves(a).iter().any(|l| self.ws.part(l.part).is_some_and(|e| e.shape().is_some())),
+            None => self.doc.result().is_some(),
+        };
         let busy = self.fem_busy();
         match c {
-            FemCmd::Analysis => ("FEM_Analysis", "Analysis Container", "Creates an analysis container with the CalculiX solver for the open part", idle && solid),
+            FemCmd::Analysis => ("FEM_Analysis", "Analysis Container", "Creates an analysis container with the CalculiX solver for the open part or assembly", idle && solid),
             FemCmd::Material => ("FEM_MaterialSolid", "Material for Solid", "Creates a FEM material for a solid", has),
             FemCmd::Mesh => ("FEM_MeshGmshFromShape", "Mesh From Shape by Gmsh", "Creates a FEM mesh from the part with Gmsh (or edits it)", has && !busy),
             FemCmd::ClearMesh => ("FEM_MeshClear", "Clear FEM Mesh", "Clears the mesh data of the FEM mesh object", has && cur.is_some_and(|a| self.fem.docs[a].rt.mesh.is_some()) && !busy),
@@ -606,6 +698,9 @@ impl App {
 
     fn fem_new_analysis(&mut self) {
         let Some(part) = self.fem_part_name() else { return };
+        if let Some(aid) = self.active_assembly() {
+            return self.fem_new_asm_analysis(aid, part);
+        }
         if self.doc.result().is_none() {
             self.dialog = Some(Dialog::Message("The part has no solid yet. Create a body (for example a Pad) first.".into()));
             return;
@@ -617,7 +712,7 @@ impl App {
         // FreeCAD's New Analysis creates the container and the solver; material and mesh are added separately
         a.materials.clear();
         a.analysis_type = AnalysisType::Static;
-        self.fem.docs.push(FemDoc { part, analysis: a, solver: true, mesh: false, rt: FemRt::default() });
+        self.fem.docs.push(FemDoc { part, analysis: a, solver: true, mesh: false, asm: None, rt: FemRt::default() });
         let i = self.fem.docs.len() - 1;
         self.fem.active = Some(i);
         self.fem.sel = Some(FemItem::Analysis(i));
@@ -626,8 +721,37 @@ impl App {
         self.status = format!("Created {} (active analysis) with SolverCcxTools", self.fem.docs[i].analysis.name);
     }
 
+    /// New analysis of the open assembly: bonded parts with their own materials; the setup
+    /// task opens to choose how the parts are joined, edit materials and find contacts.
+    fn fem_new_asm_analysis(&mut self, aid: fc_assembly::AssemblyId, name: String) {
+        self.snapshot();
+        let before = self.undo.last().cloned().unwrap_or_default();
+        let mut an = Analysis::new(ShapeSource::Brep(PathBuf::new()), Material::steel_generic());
+        an.name = self.fem_unique_name("Analysis");
+        an.analysis_type = AnalysisType::Static;
+        let materials = self.fem_default_materials(aid);
+        self.fem.docs.push(FemDoc { part: name, analysis: an, solver: true, mesh: false, asm: Some(AsmFem { joining: fc_fem::Joining::Fragments { fuzzy: 0.0 }, materials }), rt: FemRt::default() });
+        let i = self.fem.docs.len() - 1;
+        if let Err(e) = self.fem_asm_build(i) {
+            self.fem.docs.pop();
+            self.undo.pop();
+            self.dialog = Some(Dialog::Message(format!("Could not set up the analysis: {e}")));
+            return;
+        }
+        self.fem.active = Some(i);
+        self.fem.sel = Some(FemItem::Analysis(i));
+        self.fem.task = Some(FemTask::AsmSetup { a: i, created: true, before, contacts: None, tol: 0.1 });
+        self.dirty = true;
+        self.rebuild_scene();
+        self.status = format!("Created {}: the parts are bonded (BooleanFragments); check materials and contacts", self.fem.docs[i].analysis.name);
+    }
+
     fn fem_new_material(&mut self) {
         let Some(a) = self.fem_cur() else { return };
+        if self.fem.docs[a].asm.is_some() {
+            // assembly analyses: one material per part, in the setup task
+            return self.fem_open_task(FemItem::Analysis(a));
+        }
         self.snapshot();
         let before = self.undo.last().cloned().unwrap_or_default();
         let mats = &mut self.fem.docs[a].analysis.materials;
@@ -735,6 +859,7 @@ impl App {
             FemItem::Mesh(a) => Some(FemTask::Mesh { a, created: false, before: snap(self) }),
             FemItem::Solver(a) => Some(FemTask::Solver { a, before: snap(self), auto: false }),
             FemItem::Results(a) | FemItem::ResultMesh(a) if self.fem.docs[a].rt.results.is_some() => Some(FemTask::Results { a }),
+            FemItem::Analysis(a) | FemItem::Interaction(a, _) if self.fem.docs[a].asm.is_some() => Some(FemTask::AsmSetup { a, created: false, before: snap(self), contacts: None, tol: 0.1 }),
             _ => None,
         };
         self.fem.hide_results = false;
@@ -808,6 +933,11 @@ impl App {
                 d.rt.surface = None;
             }
             FemItem::Solver(_) => self.fem.docs[a].solver = false,
+            FemItem::Interaction(_, i) => {
+                if i < self.fem.docs[a].analysis.interactions.len() {
+                    self.fem.docs[a].analysis.interactions.remove(i);
+                }
+            }
             FemItem::Results(_) | FemItem::ResultMesh(_) => {
                 self.undo.pop();
                 self.fem_purge();
@@ -824,7 +954,7 @@ impl App {
     pub(super) fn fem_subref(&self, p: &Pick) -> Option<SubRef> {
         let idx = p.id as usize + 1;
         Some(match p.kind {
-            PickKind::Face => self.doc.result().and_then(|s| SubRef::face_of(s, idx)).unwrap_or(SubRef::face(idx)),
+            PickKind::Face => self.fem_cur_shape().and_then(|s| SubRef::face_of(s, idx)).unwrap_or(SubRef::face(idx)),
             PickKind::Edge => SubRef::edge(idx),
             PickKind::Vertex => SubRef::vertex(idx),
         })
@@ -835,13 +965,14 @@ impl App {
         let Some(FemTask::Constraint { a, c, mode, .. }) = self.fem.task.as_ref() else { return };
         let (a, c, mode) = (*a, *c, *mode);
         let Some(r) = self.fem_subref(p) else { return };
+        let shape = self.fem_cur_shape().cloned();
         let Some(con) = self.fem.docs.get_mut(a).and_then(|d| d.analysis.constraints.get_mut(c)) else { return };
         let k = CKind::of(&con.kind);
         match mode {
             PickMode::Direction => {
                 let dir = match p.kind {
-                    PickKind::Face => self.doc.result().and_then(|s| s.face_info(p.id as usize + 1).ok()).filter(|f| f.kind == 0).map(|f| f.normal),
-                    PickKind::Edge => self.doc.result().and_then(|s| s.edge_info(p.id as usize + 1).ok()).filter(|e| e.kind == 0).map(|e| e.dir),
+                    PickKind::Face => shape.as_ref().and_then(|s| s.face_info(p.id as usize + 1).ok()).filter(|f| f.kind == 0).map(|f| f.normal),
+                    PickKind::Edge => shape.as_ref().and_then(|s| s.edge_info(p.id as usize + 1).ok()).filter(|e| e.kind == 0).map(|e| e.dir),
                     PickKind::Vertex => None,
                 };
                 match dir {
@@ -892,7 +1023,14 @@ impl App {
     /// Problems that keep a run from starting (FreeCAD's check_prerequisites).
     pub(super) fn fem_check(&self, a: usize, mesh_only: bool) -> Option<String> {
         let d = self.fem.docs.get(a)?;
-        if self.doc.result().is_none() {
+        if d.asm.is_some() {
+            if d.rt.shape.is_none() {
+                return Some(d.rt.error.clone().unwrap_or_else(|| "The assembly has no parts with a solid to analyse.".into()));
+            }
+            if !mesh_only && matches!(d.asm.as_ref().map(|x| x.joining), Some(fc_fem::Joining::Separate)) && d.analysis.parts.len() > 1 && d.analysis.interactions.is_empty() {
+                return Some("The parts are meshed separately but nothing joins them: add ties or contact (Detect contacts in the analysis setup), or bond them.".into());
+            }
+        } else if self.doc.result().is_none() {
             return Some("The part has no solid to analyse.".into());
         }
         if mesh_only {
@@ -934,6 +1072,7 @@ impl App {
         if self.fem_busy() {
             return;
         }
+        self.fem_ensure_shape(a);
         if let Some(e) = self.fem_check(a, mesh_only) {
             self.fem.docs[a].rt.error = Some(e.clone());
             self.status = e;
@@ -947,7 +1086,8 @@ impl App {
             self.status = msg.lines().next().unwrap_or_default().to_string();
             return;
         }
-        let Some(shape) = self.doc.result().cloned() else { return };
+        let shape = if self.fem.docs[a].asm.is_some() { self.fem.docs[a].rt.shape.clone() } else { self.doc.result().cloned() };
+        let Some(shape) = shape else { return };
         let mut an = self.fem.docs[a].analysis.clone();
         an.shape = ShapeSource::Shape(shape);
         an.shape_name = self.fem.docs[a].part.clone();
@@ -962,6 +1102,7 @@ impl App {
         rt.meshed_with = Some(settings);
         if !mesh_only {
             rt.results = None;
+            rt.part_results = None;
         }
         self.fem.job = Some(FemJob { analysis: a, mesh_only, rx, cancel, started: std::time::Instant::now(), stage: "Starting...".into() });
         self.status = if mesh_only { "Meshing with Gmsh...".into() } else { "Running the analysis...".into() };
@@ -1011,6 +1152,13 @@ impl App {
                     }
                 }
                 JobMsg::Solved(r) => {
+                    // assembly analyses: maxima per part (fc-fem's part_results)
+                    if let (true, Some(m), Some(sh)) = (d.asm.is_some(), d.rt.mesh.clone(), d.rt.shape.clone()) {
+                        let mut an = d.analysis.clone();
+                        an.shape = ShapeSource::Shape(sh);
+                        let sol = fc_fem::Solution { mesh: (*m).clone(), results: r.clone(), work_dir: PathBuf::new(), gmsh_log: String::new(), ccx_log: String::new() };
+                        d.rt.part_results = Some(fc_fem::part_results(&an, &sol));
+                    }
                     d.rt.results = Some(Arc::new(r));
                     finished = Some(Ok(()));
                 }
@@ -1081,7 +1229,7 @@ impl App {
         }
         let Some(a) = self.fem_cur() else { return };
         // picking geometry for a constraint: show the body
-        if matches!(self.fem.task, Some(FemTask::Constraint { .. } | FemTask::Material { .. })) {
+        if matches!(self.fem.task, Some(FemTask::Constraint { .. } | FemTask::Material { .. } | FemTask::AsmSetup { .. })) {
             return;
         }
         let rt = self.fem.docs[a].rt.clone();
@@ -1130,6 +1278,47 @@ impl App {
             self.fem.shown = Some(Shown { object: at, node_of_vertex: nodes, values: None, min: 0.0, max: 0.0, max_node: 0, positions: m.coords.clone(), scale: 0.0 });
             self.fem.fem_at = Some(at);
         }
+    }
+
+    /// The 3D view of the FEM workbench on an assembly: the analysed shape (one object, its
+    /// faces pickable for constraints, colored per part), then the mesh or results.
+    pub(super) fn rebuild_fem_asm_scene(&mut self) {
+        let Some(a) = self.fem_cur() else { return };
+        self.fem_ensure_shape(a);
+        let mut objs = vec![];
+        if let Some(shape) = self.fem.docs[a].rt.shape.clone() {
+            if let Some(mut o) = scene::shape_object("Analysis", &shape, scene::BODY_COLOR) {
+                let d = &self.fem.docs[a];
+                let face_part: HashMap<usize, usize> = d.analysis.parts.iter().enumerate().flat_map(|(pi, p)| p.faces.iter().map(move |f| (f.1, pi))).collect();
+                let mut colors = vec![[0.8f32, 0.8, 0.8]; o.mesh.positions.len()];
+                for (t, f) in o.mesh.tri_face.iter().enumerate() {
+                    if let Some(pi) = face_part.get(&(*f as usize + 1)) {
+                        let c = part_color(*pi);
+                        for k in 0..3 {
+                            colors[o.mesh.indices[3 * t + k] as usize] = c;
+                        }
+                    }
+                }
+                o.mesh.colors = colors;
+                o.color = [1.0, 1.0, 1.0, 1.0];
+                objs.push(o);
+            }
+        }
+        self.fem_extend_scene(&mut objs);
+        self.vp.pick_limit = self.fem.fem_at.unwrap_or(usize::MAX);
+        self.asm.objs.clear();
+        self.vp.set_objects(objs);
+        self.vp.set_overlay(crate::viewport::Overlay::default());
+        self.planes_at = None;
+    }
+
+    /// Part of the result triangle `t` under the cursor (assembly analyses).
+    pub(super) fn fem_part_at_triangle(&self, a: usize, t: usize) -> Option<String> {
+        let d = self.fem.docs.get(a)?;
+        d.asm.as_ref()?;
+        let r = d.rt.results.as_ref()?;
+        let solid = *r.surface.tri_solid.get(t)? as usize;
+        d.analysis.part_of_solid(solid).map(|p| d.analysis.parts[p].name.clone())
     }
 
     fn ctx_time(&self) -> f64 {
@@ -1269,5 +1458,26 @@ mod reference {
         a.mesh.max_size = 5.0;
         let sol = fc_fem::solve(&a, &Default::default()).unwrap();
         println!("plate_hole: faces {x0} {x1}, nodes {}, max|u| {:?}, max vM {:?}", sol.results.node_count(), sol.results.max_displacement().map(|e| e.value), sol.results.max_von_mises().map(|e| e.value));
+    }
+
+    /// Two bonded blocks (fc-fem's asm_stack): BooleanFragments, Lower aluminium / Upper
+    /// steel from the parts' materials, bottom fixed, 10 MPa on top, 4 mm tets.
+    #[test]
+    #[ignore]
+    fn fem_reference_asm_stack() {
+        let mut ws = crate::demo::asm_test_workspace("stack").unwrap();
+        ws.recompute();
+        let mut a = fc_fem::analysis_from_assembly(&ws, ws.assemblies[0].id, fc_fem::Joining::Fragments { fuzzy: 0.0 }).unwrap();
+        let s = a.shape_in_memory().unwrap().clone();
+        let bottom = face_where(&s, |f| f.kind == 0 && f.normal[2] < -0.99 && f.center[2].abs() < 1e-6);
+        let top = face_where(&s, |f| f.kind == 0 && f.normal[2] > 0.99 && (f.center[2] - 40.0).abs() < 1e-6);
+        a.fixed(vec![SubRef::face_of(&s, bottom).unwrap()]);
+        a.pressure(vec![SubRef::face_of(&s, top).unwrap()], 10.0, false);
+        a.mesh.max_size = 4.0;
+        let sol = fc_fem::solve(&a, &Default::default()).unwrap();
+        for p in fc_fem::part_results(&a, &sol) {
+            println!("asm_stack part {}: max|u| {:?} max vM {:?}", p.name, p.max_displacement.map(|e| e.value), p.max_von_mises.map(|e| e.value));
+        }
+        println!("asm_stack: faces {bottom} {top}, nodes {}, max|u| {:?}, max vM {:?}", sol.results.node_count(), sol.results.max_displacement().map(|e| e.value), sol.results.max_von_mises().map(|e| e.value));
     }
 }

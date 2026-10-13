@@ -169,7 +169,9 @@ pub fn push_button_enabled(ui: &mut egui::Ui, id: &str, text: &str, width: f32, 
     if default {
         b = b.fill(theme::OK_BUTTON).stroke(Stroke::new(1.0, Color32::from_rgb(70, 130, 200)));
     }
-    let r = ui.add_enabled(enabled, b);
+    // a stable id per button name: a button that appears where another widget was last
+    // frame must not take that widget's click
+    let r = ui.push_id(("push_button", id), |ui| ui.add_enabled(enabled, b)).inner;
     reg(id.to_string(), r.rect);
     r
 }

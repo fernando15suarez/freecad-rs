@@ -242,7 +242,7 @@ impl App {
     pub(super) fn switch_workbench(&mut self, assembly: bool) {
         self.fem_leave();
         if assembly {
-            match self.ws.assemblies.first().map(|a| a.id) {
+            match self.active_assembly().or(self.ws.assemblies.first().map(|a| a.id)) {
                 Some(a) => self.switch_tab(Tab::Assembly(a)),
                 None => self.new_assembly(),
             }

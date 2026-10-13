@@ -244,7 +244,7 @@ impl App {
             Act::Solve => ("Assembly_SolveAssembly", "Solve Assembly", "Solves the assembly's joints again", String::new(), idle && self.active_assembly().is_some()),
             Act::Workbench(true) => ("AssemblyWorkbench", "Assembly", "Assembly workbench: parts, joints and mate connectors", String::new(), idle),
             Act::Workbench(false) => ("PartDesignWorkbench", "Part Design", "Part Design workbench: sketches and features of a part", String::new(), idle),
-            Act::FemWorkbench => ("FemWorkbench", "FEM", "FEM workbench: finite element analysis of a part with Gmsh and CalculiX", String::new(), idle),
+            Act::FemWorkbench => ("FemWorkbench", "FEM", "FEM workbench: finite element analysis of a part, or of an assembly (bonded or with ties and contact), with Gmsh and CalculiX", String::new(), idle),
             Act::Fem(c) => {
                 let (icon, title, desc, en) = self.fem_cmd_info(c);
                 (icon, title, desc, String::new(), en)
@@ -312,7 +312,7 @@ impl App {
                 ui.separator();
                 self.menu_item(ui, Act::ToggleOrigin);
             });
-            if self.active_assembly().is_some() {
+            if self.active_assembly().is_some() && !self.fem.on {
                 ui.menu_button("Assembly", |ui| {
                     ui.set_min_width(240.0);
                     self.menu_item(ui, Act::NewAssembly);
@@ -405,10 +405,10 @@ impl App {
     fn workbench_box(&mut self, ui: &mut egui::Ui) {
         let (icon, name) = if self.editor.is_some() {
             ("SketcherWorkbench", "Sketcher")
-        } else if self.active_assembly().is_some() {
-            ("AssemblyWorkbench", "Assembly")
         } else if self.fem.on {
             ("FemWorkbench", "FEM")
+        } else if self.active_assembly().is_some() {
+            ("AssemblyWorkbench", "Assembly")
         } else {
             ("PartDesignWorkbench", "Part Design")
         };
@@ -424,7 +424,7 @@ impl App {
         let resp = resp.on_hover_ui(|ui| crate::widgets::tooltip(ui, "Workbench", "Part Design edits parts, Assembly joins them, FEM analyses a part. Sketcher is active while a sketch is being edited.", ""));
         egui::Popup::menu(&resp).show(|ui| {
             ui.set_min_width(170.0);
-            let cur = if self.active_assembly().is_some() { 1 } else if self.fem.on { 2 } else { 0 };
+            let cur = if self.fem.on { 2 } else if self.active_assembly().is_some() { 1 } else { 0 };
             for (i, a) in [Act::Workbench(false), Act::Workbench(true), Act::FemWorkbench].into_iter().enumerate() {
                 let (icon, title, desc, _, en) = self.act_info(a);
                 let r = ui.add_enabled(en, egui::Button::image_and_text(crate::icons::image(ui.ctx(), icon, 16.0), title).selected(cur == i));
@@ -501,7 +501,7 @@ impl App {
         });
         ui.add_space(2.0);
         ui.horizontal_wrapped(|ui| {
-            if self.active_assembly().is_some() {
+            if self.active_assembly().is_some() && !self.fem.on {
                 // FreeCAD's Assembly toolbar order
                 tb_grip(ui);
                 self.tb(ui, "newasm", Act::NewAssembly, false);

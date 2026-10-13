@@ -176,7 +176,7 @@ impl App {
                     if r.double {
                         double = Some(it);
                     }
-                    let editable = !matches!(it, FemItem::Analysis(_) | FemItem::ResultMesh(_));
+                    let editable = !matches!(it, FemItem::ResultMesh(_)) && (!matches!(it, FemItem::Analysis(_)) || app.fem.docs.get(it.analysis()).is_some_and(|d| d.asm.is_some()));
                     r.resp.context_menu(|ui| {
                         if editable && ui.button("Edit").clicked() {
                             double = Some(it);
@@ -231,6 +231,14 @@ impl App {
                 let refs = con.refs.iter().map(|r| r.name()).collect::<Vec<_>>().join(", ");
                 let tip = format!("{}: {}\n{}", con.name, k.info().2, if missing { "No references: double-click and pick geometry".to_string() } else if refs.is_empty() { String::new() } else { format!("References: {refs}") });
                 row(self, ui, format!("tree:{}", con.name), 2, None, None, k.info().0, missing.then_some("overlay_error"), RichText::new(&con.name), FemItem::Constraint(a, c), tip);
+            }
+            for (i, it) in d.analysis.interactions.iter().enumerate() {
+                let (icon, kind) = match it.kind {
+                    fc_fem::InteractionKind::Tie { .. } => ("FEM_ConstraintTie", "Tie (bonded)"),
+                    fc_fem::InteractionKind::Contact { .. } => ("FEM_ConstraintContact", "Contact (penalty)"),
+                };
+                let refs = |v: &Vec<fc_fem::SubRef>| v.iter().map(|r| r.name()).collect::<Vec<_>>().join(", ");
+                row(self, ui, format!("tree:{}", it.name), 2, None, None, icon, None, RichText::new(&it.name), FemItem::Interaction(a, i), format!("{}: {kind}\nSlave {} · master {}", it.name, refs(&it.slave), refs(&it.master)));
             }
             if let Some(r) = &d.rt.results {
                 let label = if r.modes.is_empty() { "CCX_Results".to_string() } else { format!("CCX_Results ({} modes)", r.modes.len()) };
@@ -288,6 +296,24 @@ impl App {
                 ro(&mut g, ui, "Label", d.analysis.name.clone());
                 ro(&mut g, ui, "Part", d.part.clone());
                 ro(&mut g, ui, "Constraints", d.analysis.constraints.len().to_string());
+                if let Some(x) = &d.asm {
+                    g.group(ui, "Assembly");
+                    ro(&mut g, ui, "Shape", d.analysis.shape_name.clone());
+                    ro(&mut g, ui, "Joining", match x.joining {
+                        fc_fem::Joining::Fragments { .. } => "bonded (BooleanFragments)".into(),
+                        fc_fem::Joining::Separate => "separate parts".into(),
+                    });
+                    ro(&mut g, ui, "Parts", d.analysis.parts.len().to_string());
+                    ro(&mut g, ui, "Ties / contacts", d.analysis.interactions.len().to_string());
+                }
+            }
+            FemItem::Interaction(_, i) => {
+                let Some(it) = d.analysis.interactions.get(i) else { return };
+                g.group(ui, "Interaction");
+                ro(&mut g, ui, "Label", it.name.clone());
+                ro(&mut g, ui, "Slave", it.slave.iter().map(|r| r.name()).collect::<Vec<_>>().join(", "));
+                ro(&mut g, ui, "Master", it.master.iter().map(|r| r.name()).collect::<Vec<_>>().join(", "));
+                ro(&mut g, ui, "Type", format!("{:?}", it.kind));
             }
             FemItem::Solver(_) => {
                 g.group(ui, "Solver");
@@ -402,6 +428,7 @@ impl App {
             FemTask::Mesh { .. } => self.fem_mesh_task(ui, a),
             FemTask::Solver { .. } => self.fem_solver_task(ui, a),
             FemTask::Results { .. } => self.fem_results_task(ui, a),
+            FemTask::AsmSetup { .. } => self.fem_asm_setup_task(ui, a),
         }
     }
 
@@ -795,6 +822,29 @@ impl App {
                     }
                 }
             });
+            if let (Some(parts), true) = (self.fem.docs[a].rt.part_results.clone(), r.modes.is_empty()) {
+                task_box(ui, "fem_parts", "Part_BooleanFragments", "Per part", |ui| {
+                    egui::Grid::new("fem_part_grid").striped(true).spacing(egui::vec2(10.0, 4.0)).show(ui, |ui| {
+                        for h in ["Part", "Max |u| (mm)", "Max vM (MPa)"] {
+                            ui.label(RichText::new(h).strong().color(theme::TEXT));
+                        }
+                        ui.end_row();
+                        for (i, p) in parts.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                                let c = part_color(i);
+                                ui.painter().rect_filled(r, 2.0, Color32::from_rgb((c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8));
+                                let l = ui.label(RichText::new(&p.name).color(theme::TEXT));
+                                widgets::reg(format!("fem:part:{}", p.name), l.rect);
+                            });
+                            ui.label(RichText::new(p.max_displacement.map(|e| sig(e.value)).unwrap_or_else(|| "—".into())).color(theme::TEXT));
+                            ui.label(RichText::new(p.max_von_mises.map(|e| sig(e.value)).unwrap_or_else(|| "—".into())).color(theme::TEXT));
+                            ui.end_row();
+                        }
+                    });
+                    info_text(ui, "Hover the result to read the part and the value under the cursor.");
+                });
+            }
             task_box(ui, "fem_warp", "FEM_PostFilterWarp", "Deformation", |ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
                 check(ui, "Automatic scale", &mut v.auto_scale, "Automatic scale", "Scale the displacements so the largest is 5 % of the part size");
@@ -839,7 +889,7 @@ impl App {
 
     /// FEM mouse handling and drawing in the 3D view; true when it handled the input.
     pub(super) fn fem_view_input(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, r: &crate::viewport::ViewportResponse) -> bool {
-        if !self.fem.on || self.active_part().is_none() {
+        if !self.fem.on || (self.active_part().is_none() && self.active_assembly().is_none()) {
             return false;
         }
         self.fem.hover_text = None;
@@ -912,10 +962,11 @@ impl App {
         let Some(a) = self.fem_cur() else { return };
         let d = &self.fem.docs[a];
         let id = d.rt.results.as_ref().map(|r| r.node_ids[node]).or(d.rt.mesh.as_ref().map(|m| m.node_ids[node])).unwrap_or(0);
+        let part = self.fem_part_at_triangle(a, t).map(|p| format!("{p}\n")).unwrap_or_default();
         let text = match &s.values {
             Some(v) => {
                 let (name, unit) = field_label(self.fem.view.field);
-                format!("{name}: {} {unit}\nNode {id}", sig(v[node]))
+                format!("{part}{name}: {} {unit}\nNode {id}", sig(v[node]))
             }
             None => {
                 let q = s.positions[node];
@@ -1081,7 +1132,7 @@ impl App {
             let col = if hl { SEL_GREEN } else { base };
             if let ConstraintKind::SelfWeight { direction, .. } = &con.kind {
                 // one large arrow at the middle of the part
-                if let Some(bb) = self.doc.result().map(|s| s.bbox()) {
+                if let Some(bb) = self.fem_cur_shape().map(|s| s.bbox()) {
                     let c = [(bb[0] + bb[3]) * 0.5, (bb[1] + bb[4]) * 0.5, (bb[2] + bb[5]) * 0.5];
                     let len = 70.0 / self.vp.pixels_per_unit_at(c);
                     let dn = normalize(*direction);
