@@ -138,6 +138,14 @@ pub fn run_ccx_streaming(dir: &Path, threads: u32, on_line: &mut dyn FnMut(&str)
                 on_line(&line);
                 log.push_str(&line);
                 log.push('\n');
+                // a runaway ccx can print gigabytes: keep the last ~1 MB
+                if log.len() > 2 << 20 {
+                    let mut cut = log.len() - (1 << 20);
+                    while !log.is_char_boundary(cut) {
+                        cut += 1;
+                    }
+                    log.drain(..cut);
+                }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
